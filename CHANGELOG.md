@@ -2,6 +2,12 @@
 
 すべての重要な変更をこのファイルに記録します。バージョンはSemantic Versioningに従い、本番利用の承認状態と単なる実装完了を分離します。
 
+## [0.2.0-alpha.2] - 2026-08-26
+
+### Fixed
+
+- Xcode 16／Swift 6.0系でもmedia cache容量の辞書リテラルを`Int64`として一意に型解決できるようにし、GitHub ActionsのmacOS 15 runnerとのtoolchain互換性を修正。
+
 ## [0.2.0-alpha.1] - 2026-08-26
 
 ### Added

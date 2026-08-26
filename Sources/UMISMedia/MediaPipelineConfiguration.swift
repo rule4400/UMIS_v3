@@ -50,15 +50,16 @@ public struct MediaPipelineConfiguration: Sendable {
         let root = base
             .appendingPathComponent(bundleIdentifier, isDirectory: true)
             .appendingPathComponent("media", isDirectory: true)
+        let mib: Int64 = 1_024 * 1_024
         let gib: Int64 = 1_024 * 1_024 * 1_024
         return Self(
             cacheDirectory: root,
             diskHardLimitBytes: 2 * gib,
             diskSoftLimits: [
-                .thumbnail: 512 * 1_024 * 1_024,
-                .preview: 512 * 1_024 * 1_024,
-                .poster: 256 * 1_024 * 1_024,
-                .scrub: 256 * 1_024 * 1_024,
+                .thumbnail: 512 * mib,
+                .preview: 512 * mib,
+                .poster: 256 * mib,
+                .scrub: 256 * mib,
             ]
         )
     }
