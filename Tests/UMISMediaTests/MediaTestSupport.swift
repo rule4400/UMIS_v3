@@ -423,11 +423,17 @@ struct MetadataGeneratorStatistics: Sendable, Equatable {
 }
 
 actor CountingMetadataGenerator: MediaGenerating {
+    private struct InvocationWaiter {
+        let minimumCount: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private let resultImage: MediaImage
     private let gate: TestGate
     private var invocationCount = 0
     private var activeCount = 0
     private var maximumActiveCount = 0
+    private var invocationWaiters: [InvocationWaiter] = []
 
     init(image: CGImage, gate: TestGate) {
         resultImage = MediaImage(cgImage: image, generationMethod: .imageIO)
@@ -451,6 +457,7 @@ actor CountingMetadataGenerator: MediaGenerating {
         invocationCount += 1
         activeCount += 1
         maximumActiveCount = max(maximumActiveCount, activeCount)
+        resumeSatisfiedInvocationWaiters()
         defer { activeCount -= 1 }
         await gate.wait()
         if Task.isCancelled { return .failure(.init(.cancelled)) }
@@ -467,5 +474,31 @@ actor CountingMetadataGenerator: MediaGenerating {
             activeCount: activeCount,
             maximumActiveCount: maximumActiveCount
         )
+    }
+
+    /// Suspends the test task until the generator has actually entered metadata work.
+    /// Unlike a finite `Task.yield()` polling loop, this handshake does not depend on
+    /// executor fairness or host load under `swift test --parallel`.
+    func waitUntilInvocationCount(_ minimumCount: Int) async {
+        precondition(minimumCount > 0)
+        guard invocationCount < minimumCount else { return }
+        await withCheckedContinuation { continuation in
+            invocationWaiters.append(InvocationWaiter(
+                minimumCount: minimumCount,
+                continuation: continuation
+            ))
+        }
+    }
+
+    private func resumeSatisfiedInvocationWaiters() {
+        var pending: [InvocationWaiter] = []
+        for waiter in invocationWaiters {
+            if invocationCount >= waiter.minimumCount {
+                waiter.continuation.resume()
+            } else {
+                pending.append(waiter)
+            }
+        }
+        invocationWaiters = pending
     }
 }

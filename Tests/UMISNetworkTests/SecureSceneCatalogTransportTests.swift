@@ -30,10 +30,11 @@ final class SecureSceneCatalogTransportTests: XCTestCase, @unchecked Sendable {
             pskIdentity: UUID(),
             transportPSK: Data(repeating: 0xa5, count: 32)
         )
+        let provider = SnapshotProviderProbe(snapshot: snapshot)
         let server = try SecureSceneCatalogServer(
             serviceName: "UMIS Transport Test \(UUID().uuidString.prefix(8))",
             pairedClients: [credential],
-            snapshotProvider: { snapshot }
+            snapshotProvider: { try await provider.provide() }
         )
         let events = server.events()
         try server.start()
@@ -76,6 +77,36 @@ final class SecureSceneCatalogTransportTests: XCTestCase, @unchecked Sendable {
                 "unexpected error: \(error)"
             )
         }
+
+        // Regression for process-wide TLS 1.2 session caching: after one authenticated connection,
+        // concurrent connections using the same PSK identity but different key bytes must still
+        // perform a fresh PSK proof and must never reach the snapshot provider.
+        let rejected = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            for _ in 0..<6 {
+                group.addTask {
+                    do {
+                        _ = try await SecureSceneCatalogClient().fetchFullSnapshot(
+                            host: "127.0.0.1",
+                            port: port,
+                            credential: wrongPSK,
+                            timeout: 3
+                        )
+                        return false
+                    } catch {
+                        return error is SecureSceneCatalogTransportError
+                    }
+                }
+            }
+            return await group.reduce(into: []) { $0.append($1) }
+        }
+        XCTAssertEqual(rejected.count, 6)
+        XCTAssertTrue(rejected.allSatisfy { $0 })
+        let providerInvocationCount = await provider.invocationCount()
+        XCTAssertEqual(
+            providerInvocationCount,
+            1,
+            "failed PSK handshakes must not reach application snapshot handling"
+        )
     }
 
     func testPairingCredentialRefusesFingerprintMismatch() throws {
@@ -125,4 +156,20 @@ final class SecureSceneCatalogTransportTests: XCTestCase, @unchecked Sendable {
             return port
         }
     }
+}
+
+private actor SnapshotProviderProbe {
+    private let snapshot: SignedSceneCatalogSnapshot
+    private var count = 0
+
+    init(snapshot: SignedSceneCatalogSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func provide() throws -> SignedSceneCatalogSnapshot {
+        count += 1
+        return snapshot
+    }
+
+    func invocationCount() -> Int { count }
 }

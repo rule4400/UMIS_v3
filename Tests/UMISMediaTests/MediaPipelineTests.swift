@@ -761,11 +761,9 @@ final class MediaPipelineTests: XCTestCase {
                 assumedTimeZone: .gmt
             )
         }
-        let reachedLimit = await eventually {
-            await generator.statistics().activeCount == 3
-        }
-        XCTAssertTrue(reachedLimit)
+        await generator.waitUntilInvocationCount(3)
         let blockedStatistics = await generator.statistics()
+        XCTAssertEqual(blockedStatistics.activeCount, 3)
         XCTAssertEqual(blockedStatistics.maximumActiveCount, 3)
         await gate.open()
         let results = await task.value
@@ -799,8 +797,9 @@ final class MediaPipelineTests: XCTestCase {
         let first = Task {
             try await pipeline.metadata(for: source, assumedTimeZone: .gmt)
         }
-        let started = await eventually { await generator.statistics().activeCount == 1 }
-        XCTAssertTrue(started)
+        await generator.waitUntilInvocationCount(1)
+        let startedStatistics = await generator.statistics()
+        XCTAssertEqual(startedStatistics.activeCount, 1)
         try Data(repeating: 2, count: 17).write(to: source, options: .atomic)
         await gate.open()
 

@@ -29,7 +29,7 @@
 | media cache | memory cost + memory pressure + SQLite incremental LRU + quota | 再起動、破損DB隔離、LRU test成功 | 長時間負荷未実施 | alpha |
 | Project v3／旧JSON移行／Trash復旧 | atomic fsync、known-good backup、read-only import | migration、破損分離、復旧test成功 | 実運用JSON variant未実施 | alpha |
 | audit chain／履歴export | schema v6 trusted head、O(1) transaction append、全chain明示verify、path／raw errorを含まないschema v3 export | tamper／fork／legacy epoch／10,000追記／privacy test成功 | 外部anchor／署名checkpoint未実施 | alpha |
-| LAN Scene Catalog | signed full snapshot、revision、tombstone、Keychain pairing、explicit apply＋application lease/CAS | signature、rollback、split-brain、TLS-PSK、fetch/apply race test成功 | 複数実Mac未実施 | 実験機能・production不可 |
+| LAN Scene Catalog | signed full snapshot、revision、tombstone、Keychain pairing、fresh TLS-PSK proof、explicit apply＋application lease/CAS | signature、rollback、split-brain、PSK rotation/session再開拒否、fetch/apply race test成功 | 複数実Mac未実施 | 実験機能・production不可 |
 | NAS／SMB／NFS destination | mount lifecycle authority＋generation＋volume/filesystem/device/inode署名を全I/O境界へ結線 | unmount／remount／通知遅延／stale event／provider test成功 | 実share・切断・ACL・長時間試験なし | copy-gradeのみ |
 | SD Management boundary | Disabled Gateway、canonical event、durable outbox | retry／idempotency／dead-letter test成功 | staging APIなし | adapterなし |
 | Developer ID署名／公証 | fail-closed release script実装済み | shell/plist/static検査成功 | identity/profileなし | 不可 |
@@ -52,7 +52,7 @@ Required Set、全SHA-256、最終検証、retained claim、handle-bound token�
 
 ### LAN Scene Catalog
 
-通信は実験的TLS 1.2 PSKです。Ed25519署名、catalog fingerprint、短時間invite、SAS、Keychain、rollback high-waterは実装済みですが、要件上のLAN CA、相互TLS、server/client leaf証明書、SPKI pin、端末失効が未実装です。起動ごとのoperator opt-inがなければlistener／Bonjour／fetchを開始しません。
+通信は実験的TLS 1.2 PSKです。各接続でPSKを再証明するためsession resumptionとsession ticketを無効化し、Ed25519署名、catalog fingerprint、短時間invite、SAS、Keychain、rollback high-waterも実装済みです。ただし、要件上のLAN CA、相互TLS、server/client leaf証明書、SPKI pin、端末失効は未実装です。起動ごとのoperator opt-inがなければlistener／Bonjour／fetchを開始しません。
 
 ### SD管理システム
 

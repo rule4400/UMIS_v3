@@ -442,6 +442,18 @@ private enum SceneCatalogTLS {
             tls.securityProtocolOptions,
             .TLSv12
         )
+        // A resumed TLS 1.2 session authenticates with key material established by an earlier
+        // handshake. Network.framework may cache that session process-wide for the same endpoint
+        // and PSK identity, which means a newly supplied/rotated PSK is not necessarily exercised.
+        // This transport deliberately requires a fresh PSK proof for every snapshot request.
+        sec_protocol_options_set_tls_resumption_enabled(
+            tls.securityProtocolOptions,
+            false
+        )
+        sec_protocol_options_set_tls_tickets_enabled(
+            tls.securityProtocolOptions,
+            false
+        )
         for credential in credentials {
             let psk = credential.transportPSK.withUnsafeBytes { DispatchData(bytes: $0) }
             let identityBytes = Data(credential.pskIdentity.uuidString.lowercased().utf8)

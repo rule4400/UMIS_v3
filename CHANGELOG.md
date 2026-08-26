@@ -2,6 +2,13 @@
 
 すべての重要な変更をこのファイルに記録します。バージョンはSemantic Versioningに従い、本番利用の承認状態と単なる実装完了を分離します。
 
+## [0.2.0-alpha.3] - 2026-08-26
+
+### Fixed
+
+- TLS 1.2 PSK接続でsession resumption／ticketを明示的に無効化し、PSK rotation後を含む各snapshot接続でfresh PSK proofを必須化。
+- 高負荷の並列テストでもmetadata generator開始を回数制pollingに依存せず、continuation handshakeで決定的に検証。
+
 ## [0.2.0-alpha.2] - 2026-08-26
 
 ### Fixed
