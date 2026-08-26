@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+dist/
+DerivedData/
+Artifacts/
+*.xcuserstate
+.DS_Store
+*.umis-partial
+*.umis-journal

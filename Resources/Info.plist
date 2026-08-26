@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ja</string>
+    <key>CFBundleDisplayName</key>
+    <string>RINKAN UMIS</string>
+    <key>CFBundleExecutable</key>
+    <string>RinkanUMIS</string>
+    <key>CFBundleIdentifier</key>
+    <string>jp.rinkan.umis</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>RINKAN UMIS</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.photography</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>同じLAN内のUMISマスターからシーン設定を安全に受信するために使用します。</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_umis-scene._tcp</string>
+    </array>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>撮影カードの素材を読み取り、検証済みコピーと安全な初期化を行うために使用します。</string>
+</dict>
+</plist>

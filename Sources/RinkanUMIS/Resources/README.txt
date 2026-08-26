@@ -1,0 +1,1 @@
+RINKAN UMIS runtime resources.

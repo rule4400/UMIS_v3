@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**", "release/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve package
+        run: swift package resolve
+
+      - name: Test
+        run: swift test --parallel
+
+      - name: Release build
+        run: swift build --configuration release
+
+      - name: Build local app bundle
+        env:
+          UMIS_ALLOW_ADHOC: "1"
+        run: Scripts/build_app.sh
+
+      - name: Verify app signature
+        run: codesign --verify --deep --strict --verbose=2 "dist/RINKAN UMIS.app"

@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.swift text diff
+*.md text diff
+*.plist text
+*.json text
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.heic binary
+*.mov binary
+*.mp4 binary
+*.mxf binary
+*.dng binary
+*.zip binary
+*.dmg binary
