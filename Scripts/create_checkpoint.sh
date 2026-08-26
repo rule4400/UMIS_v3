@@ -17,20 +17,33 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 3
 fi
 
-swift test
+CHECKPOINT_COMMIT=$(git rev-parse HEAD)
+CHECKPOINT_TREE=$(git rev-parse 'HEAD^{tree}')
+swift test --parallel
+if [[ -n "$(git status --porcelain)" || "$(git rev-parse HEAD)" != "${CHECKPOINT_COMMIT}" || \
+    "$(git rev-parse 'HEAD^{tree}')" != "${CHECKPOINT_TREE}" ]]; then
+    print -u2 "Repository state changed during checkpoint verification. No tag was created."
+    exit 3
+fi
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 TAG="checkpoint/${STAMP}-${LABEL}"
 OUT_DIR="${PROJECT_DIR}/Artifacts/checkpoints/${STAMP}-${LABEL}"
 mkdir -p "${OUT_DIR}"
 
-git tag -a "${TAG}" -m "Verified checkpoint ${LABEL} at ${STAMP}"
-git rev-parse HEAD > "${OUT_DIR}/commit.txt"
-git rev-parse HEAD^{tree} > "${OUT_DIR}/tree.txt"
+print -r -- "${CHECKPOINT_COMMIT}" > "${OUT_DIR}/commit.txt"
+print -r -- "${CHECKPOINT_TREE}" > "${OUT_DIR}/tree.txt"
+print -r -- "swift test --parallel" > "${OUT_DIR}/test-command.txt"
 swift --version > "${OUT_DIR}/swift-version.txt" 2>&1
 xcodebuild -version > "${OUT_DIR}/xcode-version.txt"
 xcrun --sdk macosx --show-sdk-version > "${OUT_DIR}/sdk-version.txt"
 git ls-files -z | xargs -0 shasum -a 256 > "${OUT_DIR}/source-sha256.txt"
+(
+    cd "${OUT_DIR}"
+    shasum -a 256 ./*.txt > checkpoint-files-sha256.txt
+)
+
+git tag -a "${TAG}" -m "Verified checkpoint ${LABEL} at ${STAMP}"
 
 print "${TAG}"
 print "${OUT_DIR}"

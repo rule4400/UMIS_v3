@@ -15,7 +15,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Toolchain
         run: |
@@ -29,11 +31,12 @@ jobs:
         run: swift test --parallel
 
       - name: Release build
-        run: swift build --configuration release
+        run: swift build --configuration release -Xswiftc -warnings-as-errors
 
-      - name: Build local app bundle
+      - name: Build Universal 2 local app bundle
         env:
           UMIS_ALLOW_ADHOC: "1"
+          UMIS_UNIVERSAL2: "1"
         run: Scripts/build_app.sh
 
       - name: Verify app signature

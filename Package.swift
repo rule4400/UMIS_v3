@@ -55,6 +55,10 @@ let package = Package(
             path: "Sources/RinkanUMIS",
             resources: [
                 .process("Resources"),
+            ],
+            linkerSettings: [
+                .linkedFramework("DiskArbitration"),
+                .linkedFramework("IOKit"),
             ]
         ),
         .testTarget(
@@ -71,6 +75,11 @@ let package = Package(
             name: "UMISNetworkTests",
             dependencies: ["UMISNetwork", "UMISCore"],
             path: "Tests/UMISNetworkTests"
+        ),
+        .testTarget(
+            name: "RinkanUMISTests",
+            dependencies: ["RinkanUMIS", "UMISCore"],
+            path: "Tests/RinkanUMISTests"
         ),
     ],
     swiftLanguageModes: [.v6]
