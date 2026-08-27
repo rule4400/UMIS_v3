@@ -7,6 +7,8 @@ CONFIGURATION=${UMIS_CONFIGURATION:-release}
 OUTPUT_DIR=${UMIS_OUTPUT_DIR:-${PROJECT_DIR}/dist}
 APP_NAME="RINKAN UMIS"
 APP_DIR="${OUTPUT_DIR}/${APP_NAME}.app"
+ICON_NAME="RinkanUMIS.icns"
+ICON_SOURCE="${PROJECT_DIR}/Resources/${ICON_NAME}"
 VERSION=$(<"${PROJECT_DIR}/VERSION")
 # GitHub's default shallow checkout has a history count of one. Its run number is
 # monotonic for the repository and therefore a safer CI build-number fallback.
@@ -29,6 +31,23 @@ if ! print -r -- "${BUILD_NUMBER}" | grep -Eq '^[0-9]+([.][0-9]+){0,2}$'; then
     exit 2
 fi
 plutil -lint "${PROJECT_DIR}/Resources/Info.plist" >/dev/null
+PLIST_ICON_NAME=$(plutil -extract CFBundleIconFile raw -o - "${PROJECT_DIR}/Resources/Info.plist")
+if [[ "${PLIST_ICON_NAME}" != "${ICON_NAME}" || ! -s "${ICON_SOURCE}" ]]; then
+    print -u2 "The reviewed application icon is missing or does not match CFBundleIconFile."
+    exit 2
+fi
+ICON_FORMAT=$(sips -g format "${ICON_SOURCE}" | awk '/format:/ {print $2}')
+ICON_WIDTH=$(sips -g pixelWidth "${ICON_SOURCE}" | awk '/pixelWidth:/ {print $2}')
+ICON_HEIGHT=$(sips -g pixelHeight "${ICON_SOURCE}" | awk '/pixelHeight:/ {print $2}')
+ICON_PROFILE=$(sips -g profile "${ICON_SOURCE}" | sed -n 's/^[[:space:]]*profile: //p')
+ICON_ALPHA=$(sips -g hasAlpha "${ICON_SOURCE}" | awk '/hasAlpha:/ {print $2}')
+if [[ "${ICON_FORMAT}" != "icns" || "${ICON_WIDTH}" != "1024" || \
+    "${ICON_HEIGHT}" != "1024" || "${ICON_PROFILE}" != *sRGB* || \
+    "${ICON_ALPHA}" != "yes" ]]; then
+    print -u2 "The reviewed application icon must be a 1024x1024 sRGB ICNS with alpha."
+    exit 2
+fi
+SOURCE_ICON_SHA256=$(shasum -a 256 "${ICON_SOURCE}" | awk '{print $1}')
 
 IDENTITY=${UMIS_CODESIGN_IDENTITY:-}
 VALID_IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
@@ -101,6 +120,7 @@ mkdir -p "${STAGED_APP}/Contents/MacOS" "${STAGED_APP}/Contents/Resources"
 ditto "${EXECUTABLE}" "${STAGED_APP}/Contents/MacOS/RinkanUMIS"
 ditto "${PROJECT_DIR}/Resources/Info.plist" "${STAGED_APP}/Contents/Info.plist"
 ditto "${PROJECT_DIR}/Sources/RinkanUMIS/Resources" "${STAGED_APP}/Contents/Resources"
+ditto "${ICON_SOURCE}" "${STAGED_APP}/Contents/Resources/${ICON_NAME}"
 if [[ -d "${BIN_DIR}/RinkanUMIS_RinkanUMIS.bundle" ]]; then
     ditto "${BIN_DIR}/RinkanUMIS_RinkanUMIS.bundle" "${STAGED_APP}/Contents/Resources/RinkanUMIS_RinkanUMIS.bundle"
 fi
@@ -109,9 +129,16 @@ plutil -replace CFBundleVersion -string "${BUILD_NUMBER}" "${STAGED_APP}/Content
 BUNDLE_IDENTIFIER=$(plutil -extract CFBundleIdentifier raw -o - "${STAGED_APP}/Contents/Info.plist")
 BUNDLE_EXECUTABLE=$(plutil -extract CFBundleExecutable raw -o - "${STAGED_APP}/Contents/Info.plist")
 MINIMUM_SYSTEM_VERSION=$(plutil -extract LSMinimumSystemVersion raw -o - "${STAGED_APP}/Contents/Info.plist")
+BUNDLE_ICON_NAME=$(plutil -extract CFBundleIconFile raw -o - "${STAGED_APP}/Contents/Info.plist")
 if [[ "${BUNDLE_IDENTIFIER}" != "jp.rinkan.umis" || "${BUNDLE_EXECUTABLE}" != "RinkanUMIS" || \
-    "${MINIMUM_SYSTEM_VERSION}" != "13.0" ]]; then
+    "${MINIMUM_SYSTEM_VERSION}" != "13.0" || "${BUNDLE_ICON_NAME}" != "${ICON_NAME}" || \
+    ! -s "${STAGED_APP}/Contents/Resources/${ICON_NAME}" ]]; then
     print -u2 "The application identity or deployment target in Info.plist is not the reviewed value."
+    exit 2
+fi
+STAGED_ICON_SHA256=$(shasum -a 256 "${STAGED_APP}/Contents/Resources/${ICON_NAME}" | awk '{print $1}')
+if [[ "${STAGED_ICON_SHA256}" != "${SOURCE_ICON_SHA256}" ]]; then
+    print -u2 "The staged application icon does not match the reviewed source icon."
     exit 2
 fi
 
@@ -224,6 +251,7 @@ fi
     print "xcode=$(xcodebuild -version | tr '\n' ' ')"
     print "swift=$(swift --version | head -n 1)"
     print "app_executable_sha256=$(shasum -a 256 "${APP_DIR}/Contents/MacOS/RinkanUMIS" | awk '{print $1}')"
+    print "app_icon_sha256=${SOURCE_ICON_SHA256}"
     print "signature=$(codesign -dv "${APP_DIR}" 2>&1 | tr '\n' ' ')"
 } > "${MANIFEST}"
 

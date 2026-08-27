@@ -10,6 +10,8 @@
     <string>RinkanUMIS</string>
     <key>CFBundleIdentifier</key>
     <string>jp.rinkan.umis</string>
+    <key>CFBundleIconFile</key>
+    <string>RinkanUMIS.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

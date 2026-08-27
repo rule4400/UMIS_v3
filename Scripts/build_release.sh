@@ -99,11 +99,22 @@ BUNDLE_IDENTIFIER=$(plutil -extract CFBundleIdentifier raw -o - "${APP_DIR}/Cont
 BUNDLE_SHORT_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "${APP_DIR}/Contents/Info.plist")
 BUNDLE_BUILD_VERSION=$(plutil -extract CFBundleVersion raw -o - "${APP_DIR}/Contents/Info.plist")
 MINIMUM_SYSTEM_VERSION=$(plutil -extract LSMinimumSystemVersion raw -o - "${APP_DIR}/Contents/Info.plist")
+BUNDLE_ICON_FILE=$(plutil -extract CFBundleIconFile raw -o - "${APP_DIR}/Contents/Info.plist")
+APP_ICON_PATH="${APP_DIR}/Contents/Resources/${BUNDLE_ICON_FILE}"
+SOURCE_ICON_PATH="${PROJECT_DIR}/Resources/RinkanUMIS.icns"
 EXPECTED_BUNDLE_SHORT_VERSION=${VERSION%%[-+]*}
 if [[ "${BUNDLE_IDENTIFIER}" != "jp.rinkan.umis" || \
     "${BUNDLE_SHORT_VERSION}" != "${EXPECTED_BUNDLE_SHORT_VERSION}" || \
-    "${MINIMUM_SYSTEM_VERSION}" != "13.0" ]]; then
+    "${MINIMUM_SYSTEM_VERSION}" != "13.0" || \
+    "${BUNDLE_ICON_FILE}" != "RinkanUMIS.icns" || ! -s "${APP_ICON_PATH}" || \
+    ! -s "${SOURCE_ICON_PATH}" ]]; then
     print -u2 "Bundle identity, marketing version, or deployment target does not match the reviewed release source."
+    exit 7
+fi
+APP_ICON_SHA256=$(shasum -a 256 "${APP_ICON_PATH}" | awk '{print $1}')
+SOURCE_ICON_SHA256=$(shasum -a 256 "${SOURCE_ICON_PATH}" | awk '{print $1}')
+if [[ "${APP_ICON_SHA256}" != "${SOURCE_ICON_SHA256}" ]]; then
+    print -u2 "The release application icon does not match the reviewed source icon."
     exit 7
 fi
 
@@ -362,6 +373,7 @@ RELEASE_MANIFEST="${OUTPUT_DIR}/manifests/release-${VERSION}-${RELEASE_RUN}.txt"
     print "notary_submission_sha256=$(shasum -a 256 "${NOTARY_RESULT_PATH}" | awk '{print $1}')"
     print "notary_log_sha256=$(shasum -a 256 "${NOTARY_DETAIL_PATH}" | awk '{print $1}')"
     print "app_executable_sha256=$(shasum -a 256 "${APP_DIR}/Contents/MacOS/RinkanUMIS" | awk '{print $1}')"
+    print "app_icon_sha256=${APP_ICON_SHA256}"
     print "dmg_sha256=$(shasum -a 256 "${DMG_PATH}" | awk '{print $1}')"
     print "dsym_sha256=$(shasum -a 256 "${SYMBOL_ARCHIVE}" | awk '{print $1}')"
 } > "${RELEASE_MANIFEST}"
