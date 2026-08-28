@@ -2,6 +2,25 @@
 
 すべての重要な変更をこのファイルに記録します。バージョンはSemantic Versioningに従い、本番利用の承認状態と単なる実装完了を分離します。
 
+## [0.2.0-alpha.4] - 2026-08-28
+
+### Added
+
+- ニューモーフィズムのUMIS正式アプリアイコン。macOS 13以降のICNS用continuous-curvature版と、将来のIcon Composer／システムマスク用unmasked版を分離。
+- 1024px sRGB masterの幾何学検査、標準10解像度ICNSの決定的生成、既存assetの自動backup、build／release manifestへのSHA-256記録。
+- 公証済みDMG、内包Universal 2 app、Developer ID、entitlements、dSYM、notary証跡、Git tagを後日でもread-onlyで再検証できる独立release verifier。
+
+### Fixed
+
+- `UMIS_ALLOW_ADHOC=1`がDeveloper ID導入済み環境でKeychain署名を自動選択していた問題を修正し、明示identityがないローカル検証では常にad-hoc署名を使用。
+- Apple公証待機中に`dist`のappが別buildで差し替わると、DMG内appとrelease manifestが食い違い得る競合を解消。最終stapled DMG内をread-onlyで再検証し、その値だけを証跡化。
+- DMG／dSYMの既存成果物backupとchecksumを自己完結させ、最終DMG・checksum・manifest公開途中の失敗時に直前の成果物へrollback。
+
+### Distribution
+
+- `CFBundleIconFile`からバンドル内ICNSを署名前に固定し、source／staged app／release DMGのicon hash一致をfail-closedで検証。
+- このMacのKeychainに`Developer ID Application` certificate／private keyと`UMIS_NOTARY` profileを導入。資格情報とprivate keyはrepositoryおよびrelease artifactに含めない。
+
 ## [0.2.0-alpha.3] - 2026-08-26
 
 ### Fixed
@@ -67,7 +86,7 @@
 - アプリ再起動後の中断取り込みrebindと、Copy and Rename／選別コピーのcrash-recovery UIは未実装です。NAS lifecycleはcopy-gradeのみで、実share試験とerase durability認定は未実施です。
 - LAN共有はTLS 1.2 PSKの実験機能です。mTLS、LAN CA、device certificate/revocationが完成するまでproduction不可です。
 - SD管理VPS側にversioned integration APIがないため、現行browser/admin APIへは接続しません。
-- Developer ID Application certificate/private keyとnotary Keychain profileがこのMacにないため、配布用署名とApple公証は未実施です。
+- `0.2.0-alpha.1`作成時点ではDeveloper ID Application certificate/private keyとnotary Keychain profileが未導入でした。現在の署名／公証状態は各release manifestを正本とします。
 
 ## [0.1.0-bootstrap] - 2026-08-26
 

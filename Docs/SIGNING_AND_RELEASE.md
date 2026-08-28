@@ -1,18 +1,20 @@
 # Developer ID signing and notarized release
 
-更新日: 2026-08-26
+更新日: 2026-08-28
 
 このprojectはMac App Store外配布を前提とし、`Developer ID Application` + Hardened Runtime + Apple公証 + stapled ticketをrelease条件とします。Apple Developer Program登録だけでは署名できません。署名を行うMacのKeychainに、certificateと対応するprivate keyが必要です。
 
-## 現在のブロッカー
+## 現在の署名／公証構成
 
-2026-08-26のこのMacでの確認結果:
+2026-08-28のこのMacでの確認結果:
 
-- `security find-identity -v -p codesigning`: valid identity 0件
-- `Developer ID Application` certificate + private key: Keychainに未導入
-- `notarytool` Keychain profile `UMIS_NOTARY`: 未登録
+- `security find-identity -v -p codesigning`: valid `Developer ID Application` identity 1件
+- Developer Team: `CHECK HOUSE, K.K. (FA43T8UK3P)`
+- certificateに対応するprivate key: login Keychainに導入済み
+- `notarytool` Keychain profile `UMIS_NOTARY`: 登録・認証済み
+- `0.2.0-alpha.3`: Apple Notary Service `Accepted`、ticket staple、Gatekeeper検証済み
 
-そのため、現在生成できるのはローカル検証用のad-hoc署名 `.app` だけです。配布用DMGとは扱いません。
+private key、Apple IDのapp-specific password、notary credentialはKeychainのみに保存し、repository、`.env`、build manifest、DMGには含めません。各releaseが実際に配布可能かどうかは、対応するrelease manifest、notary submission ID／log、stapler／Gatekeeper結果を正本とします。
 
 ## 1. Developer ID Application certificate
 
@@ -66,7 +68,9 @@ release scriptは次の条件をfail-closedで要求します。
 - appとdSYMのUUID一致
 - `jp.rinkan.umis`、macOS 13.0 deployment target、全sliceのTeam ID／Developer ID一致
 - JIT／unsigned executable memory／library validation無効化等の危険なentitlementなし
-- release manifestにsource tree、DB schema、toolchain、app／dSYM／DMG／notary logのSHA-256を記録
+- staple後のDMGをread-onlyで再マウントし、内包appの署名、Universal 2、bundle metadata、entitlements、icon、dSYM UUIDを直接再検証
+- release manifestにsource tree、DB schema、toolchain、DMG内app／dSYM／DMG／notary logのSHA-256を記録
+- 最終DMG、checksum、manifestの公開途中で失敗した場合は直前のartifactを復元
 
 alpha／rcを含む候補版は、testとreview完了後に`VERSION`と同じannotated tagを付けます。既にpushしたtagの打ち替えやforce-pushは行いません。
 
@@ -95,9 +99,15 @@ Scripts/build_release.sh
 
 成果物は`dist/`に作成されます。`dist/`、DMG、dSYM、notary credentialはGitへcommitしません。manifest、manifest SHA-256、notary submission ID/logをaccess-controlledなrelease証跡庫へ保管します。`.p12`、`.p8`、private key、app-specific passwordはGitHub Release artifactにも添付しません。
 
+完成後のartifactは、署名や公証recordを変更しない独立検証でも再確認します。
+
+```sh
+UMIS_VERIFY_PROFILE=UMIS_NOTARY Scripts/verify_release.sh
+```
+
 ## 5. Local-only ad-hoc build
 
-Developer ID導入前のローカル起動検証だけに使います。
+Developer IDを使用しないローカル起動検証だけに使います。identityを明示せず`UMIS_ALLOW_ADHOC=1`を指定すると、Developer IDがKeychainに導入済みでも常にad-hoc署名を使用します。
 
 ```sh
 UMIS_ALLOW_ADHOC=1 UMIS_UNIVERSAL2=1 Scripts/build_app.sh

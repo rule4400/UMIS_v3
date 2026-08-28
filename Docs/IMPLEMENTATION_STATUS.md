@@ -1,6 +1,6 @@
 # Implementation status
 
-更新日: 2026-08-26
+更新日: 2026-08-28
 
 この文書は「実装済み」「自動検証済み」「実機検証済み」「本番利用可能」を分離します。コードが存在するだけの機能を完成扱いにしません。
 
@@ -13,7 +13,7 @@
 - arm64 native起動smoke: 成功
 - x86_64 Rosetta起動smoke: 成功
 - ad-hoc codesign + Hardened Runtime整合性: 成功
-- Developer ID / notarization: 証明書・秘密鍵・Notary profile未導入のため未実行
+- Developer ID / notarization: `CHECK HOUSE, K.K. (FA43T8UK3P)` identityと`UMIS_NOTARY` profileをKeychainに導入済み。`0.2.0-alpha.3`はAccepted／staple／Gatekeeper検証成功
 
 ## 機能別状態
 
@@ -32,7 +32,7 @@
 | LAN Scene Catalog | signed full snapshot、revision、tombstone、Keychain pairing、fresh TLS-PSK proof、explicit apply＋application lease/CAS | signature、rollback、split-brain、PSK rotation/session再開拒否、fetch/apply race test成功 | 複数実Mac未実施 | 実験機能・production不可 |
 | NAS／SMB／NFS destination | mount lifecycle authority＋generation＋volume/filesystem/device/inode署名を全I/O境界へ結線 | unmount／remount／通知遅延／stale event／provider test成功 | 実share・切断・ACL・長時間試験なし | copy-gradeのみ |
 | SD Management boundary | Disabled Gateway、canonical event、durable outbox | retry／idempotency／dead-letter test成功 | staging APIなし | adapterなし |
-| Developer ID署名／公証 | fail-closed release script実装済み | shell/plist/static検査成功 | identity/profileなし | 不可 |
+| Developer ID署名／公証 | Universal 2／Hardened Runtime／secure timestamp／DMG／notary／staple／Gatekeeper、最終DMG内appのread-only再検証、transactional artifact公開をfail-closed実行 | shell/plist/static検査、独立verifierによる既存公証版の再検証成功 | `0.2.0-alpha.3` Accepted、警告0、staple／Gatekeeper成功 | release manifestで個別判定 |
 | Git／rollback | GitHub main基点、annotated bootstrap tag、hooks、worktree rollback | hook構文／tests成功 | remote push済み | 利用可能 |
 
 ## Alphaで意図的に無効または制限する機能
@@ -76,7 +76,6 @@ SD側の応答はカード初期化許可を作成・上書きできません。
 - progressive inventory／bounded metadataは実装済みだが、10,000件級の実RAW／動画で長時間負荷を未検証
 - 実運用movie／RAW／HEIC／MXF／MKV／AVI／MTS sample corpusが未提供
 - 実SD・NAS・SMB・ACL・大容量／低メモリ長時間試験が未実施
-- Developer ID Application certificate + private keyがKeychainに0件
-- `notarytool` Keychain profile未登録
+- 署名private key／notary credentialはこのMacのKeychainにのみ保存。releaseの継続性はKeychain backupとApple Developer側のcertificate管理に依存
 
 秘密鍵、password、production DB、実利用者の個人情報をrepositoryへ追加しません。

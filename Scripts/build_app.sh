@@ -50,19 +50,18 @@ fi
 SOURCE_ICON_SHA256=$(shasum -a 256 "${ICON_SOURCE}" | awk '{print $1}')
 
 IDENTITY=${UMIS_CODESIGN_IDENTITY:-}
-VALID_IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
-if [[ -z "${IDENTITY}" ]]; then
-    DEVELOPER_ID_LINES=$(print -r -- "${VALID_IDENTITIES}" | grep '"Developer ID Application:' || true)
-    DEVELOPER_ID_COUNT=$(print -r -- "${DEVELOPER_ID_LINES}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
-    if [[ "${DEVELOPER_ID_COUNT}" -gt 1 ]]; then
-        print -u2 "Multiple Developer ID Application identities are installed. Set UMIS_CODESIGN_IDENTITY explicitly."
+ALLOW_ADHOC=${UMIS_ALLOW_ADHOC:-0}
+if [[ "${ALLOW_ADHOC}" != "0" && "${ALLOW_ADHOC}" != "1" ]]; then
+    print -u2 "UMIS_ALLOW_ADHOC must be either 0 or 1."
+    exit 2
+fi
+
+if [[ -n "${IDENTITY}" ]]; then
+    if [[ "${IDENTITY}" == "-" ]]; then
+        print -u2 "Use UMIS_ALLOW_ADHOC=1 for local ad-hoc signing; do not pass '-' as an identity."
         exit 2
     fi
-    IDENTITY=$(print -r -- "${DEVELOPER_ID_LINES}" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)
-elif [[ "${IDENTITY}" == "-" ]]; then
-    print -u2 "Use UMIS_ALLOW_ADHOC=1 for local ad-hoc signing; do not pass '-' as an identity."
-    exit 2
-else
+    VALID_IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
     MATCHED_IDENTITY_LINES=$(
         {
             print -r -- "${VALID_IDENTITIES}" | grep -F -- "\"${IDENTITY}\"" ||
@@ -76,14 +75,26 @@ else
     fi
     MATCHED_IDENTITY_LINE=$(print -r -- "${MATCHED_IDENTITY_LINES}" | head -n 1)
     if [[ "${MATCHED_IDENTITY_LINE}" != *'"Developer ID Application:'* ]]; then
-        print -u2 "UMIS_CODESIGN_IDENTITY must identify a Developer ID Application certificate. Use UMIS_ALLOW_ADHOC=1 for local-only builds."
+        print -u2 "UMIS_CODESIGN_IDENTITY must identify a Developer ID Application certificate. Use UMIS_ALLOW_ADHOC=1 without an explicit identity for local-only builds."
         exit 2
     fi
-fi
-
-if [[ -z "${IDENTITY}" && "${UMIS_ALLOW_ADHOC:-0}" != "1" ]]; then
-    print -u2 "Developer ID Application identity is not installed. Set UMIS_ALLOW_ADHOC=1 only for a local development build."
-    exit 2
+elif [[ "${ALLOW_ADHOC}" == "1" ]]; then
+    # Local-only ad-hoc mode must not probe or use an installed Developer ID
+    # identity. This keeps local validation independent of Keychain access.
+    IDENTITY=""
+else
+    VALID_IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
+    DEVELOPER_ID_LINES=$(print -r -- "${VALID_IDENTITIES}" | grep '"Developer ID Application:' || true)
+    DEVELOPER_ID_COUNT=$(print -r -- "${DEVELOPER_ID_LINES}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+    if [[ "${DEVELOPER_ID_COUNT}" -gt 1 ]]; then
+        print -u2 "Multiple Developer ID Application identities are installed. Set UMIS_CODESIGN_IDENTITY explicitly."
+        exit 2
+    fi
+    IDENTITY=$(print -r -- "${DEVELOPER_ID_LINES}" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)
+    if [[ -z "${IDENTITY}" ]]; then
+        print -u2 "Developer ID Application identity is not installed. Set UMIS_ALLOW_ADHOC=1 only for a local development build."
+        exit 2
+    fi
 fi
 
 cd "${PROJECT_DIR}"
