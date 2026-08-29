@@ -190,11 +190,11 @@ public enum AdobeXMPRatingServiceError: Error, Equatable, CustomStringConvertibl
         ):
             let backupState: String
             switch originalBackupRetained {
-            case true:
+            case .some(true):
                 backupState = "the original backup is retained"
-            case false:
+            case .some(false):
                 backupState = "the original backup is no longer linked"
-            case nil:
+            case .none:
                 backupState = "the original-backup state is unknown"
             }
             let cleanupState = cleanupIncomplete ? "cleanup is incomplete" : "cleanup state is unknown"
