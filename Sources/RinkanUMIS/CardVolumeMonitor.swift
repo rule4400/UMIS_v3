@@ -173,6 +173,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
 
     let evidence = DiskArbitrationIdentityEvidence(
       mediaRegistryEntryID: observation.registryEntryID,
+      mediaSizeBytes: observation.mediaSizeBytes,
       parentChainDigest: observation.parentChainDigest,
       isEjectable: observation.isEjectable,
       physicalMediaEvidence: observation.physicalMediaEvidence
@@ -192,6 +193,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
         else { throw UMISCoreError.identityChanged }
         let freshEvidence = DiskArbitrationIdentityEvidence(
           mediaRegistryEntryID: freshObservation.registryEntryID,
+          mediaSizeBytes: freshObservation.mediaSizeBytes,
           parentChainDigest: freshObservation.parentChainDigest,
           isEjectable: freshObservation.isEjectable,
           physicalMediaEvidence: freshObservation.physicalMediaEvidence
@@ -303,6 +305,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
     let bsdName: String
     let mountURL: URL?
     let registryEntryID: UInt64
+    let mediaSizeBytes: Int64
     let parentChainDigest: String
     let isEjectable: Bool
     let physicalMediaEvidence: PhysicalMediaEvidence
@@ -321,6 +324,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
   private static func samePhysicalObservation(_ left: Observation, _ right: Observation) -> Bool {
     left.bsdName == right.bsdName
       && left.registryEntryID == right.registryEntryID
+      && left.mediaSizeBytes == right.mediaSizeBytes
       && left.parentChainDigest == right.parentChainDigest
       && left.isEjectable == right.isEjectable
       && left.physicalMediaEvidence == right.physicalMediaEvidence
@@ -341,12 +345,17 @@ final class CardVolumeMonitor: @unchecked Sendable {
     let mediaKind = description[kDADiskDescriptionMediaKindKey as String] as? String
     let vendor = description[kDADiskDescriptionDeviceVendorKey as String] as? String
     let model = description[kDADiskDescriptionDeviceModelKey as String] as? String
+    guard let mediaSizeNumber = description[kDADiskDescriptionMediaSizeKey as String] as? NSNumber else {
+      return nil
+    }
+    let mediaSizeBytes = mediaSizeNumber.int64Value
     let media = DADiskCopyIOMedia(disk)
     guard media != IO_OBJECT_NULL else { return nil }
     defer { IOObjectRelease(media) }
     var registryEntryID: UInt64 = 0
     guard IORegistryEntryGetRegistryEntryID(media, &registryEntryID) == KERN_SUCCESS,
       registryEntryID != 0,
+      mediaSizeBytes > 0,
       !devicePath.isEmpty
     else { return nil }
     let registry = registryEvidence(startingAt: media)
@@ -367,6 +376,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
     )
     let digestMaterial = [
       String(registryEntryID),
+      String(mediaSizeBytes),
       devicePath.precomposedStringWithCanonicalMapping,
       physicalMediaEvidence.transportProtocol ?? "",
       physicalMediaEvidence.interconnectLocation ?? "",
@@ -382,6 +392,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
       bsdName: bsdName,
       mountURL: mountURL,
       registryEntryID: registryEntryID,
+      mediaSizeBytes: mediaSizeBytes,
       parentChainDigest: parentChainDigest,
       isEjectable: ejectable,
       physicalMediaEvidence: physicalMediaEvidence

@@ -38,17 +38,20 @@ public actor VolumeIdentityRegistry {
 
 public struct DiskArbitrationIdentityEvidence: Sendable, Hashable {
     public var mediaRegistryEntryID: UInt64
+    public var mediaSizeBytes: Int64
     public var parentChainDigest: String
     public var isEjectable: Bool
     public var physicalMediaEvidence: PhysicalMediaEvidence
 
     public init(
         mediaRegistryEntryID: UInt64,
+        mediaSizeBytes: Int64,
         parentChainDigest: String,
         isEjectable: Bool,
         physicalMediaEvidence: PhysicalMediaEvidence = .unknown
     ) {
         self.mediaRegistryEntryID = mediaRegistryEntryID
+        self.mediaSizeBytes = mediaSizeBytes
         self.parentChainDigest = parentChainDigest
         self.isEjectable = isEjectable
         self.physicalMediaEvidence = physicalMediaEvidence
@@ -56,7 +59,8 @@ public struct DiskArbitrationIdentityEvidence: Sendable, Hashable {
 }
 
 /// Converts a Disk Arbitration appearance into a normalized identity. It cross-checks URL resource
-/// values, `diskutil info -plist`, and whole-disk topology. Missing safety fields fail closed.
+/// values, Disk Arbitration/IOKit evidence, `diskutil info -plist`, and whole-disk topology.
+/// Missing safety fields fail closed.
 public actor DiskutilIdentityResolver {
     private let runner: any ProcessRunning
     private let diskutilURL: URL
@@ -88,7 +92,6 @@ public actor DiskutilIdentityResolver {
             .volumeIsEjectableKey,
             .volumeIsReadOnlyKey,
             .volumeUUIDStringKey,
-            .volumeTotalCapacityKey,
             .volumeLocalizedFormatDescriptionKey,
             .volumeNameKey,
         ]
@@ -97,7 +100,6 @@ public actor DiskutilIdentityResolver {
               let resourceInternal = values.volumeIsInternal,
               let resourceRemovable = values.volumeIsRemovable,
               let resourceReadOnly = values.volumeIsReadOnly,
-              let resourceCapacity = values.volumeTotalCapacity,
               let resourceVolumeUUIDString = values.volumeUUIDString,
               let resourceVolumeUUID = UUID(uuidString: resourceVolumeUUIDString) else {
             throw UMISCoreError.unsafeEraseTarget("Volume resource values are incomplete or identify a non-local volume")
@@ -113,9 +115,12 @@ public actor DiskutilIdentityResolver {
             throw UMISCoreError.backendFailure("diskutil info -plist failed while resolving a volume")
         }
         let info = try DiskutilInfo(data: infoResult.standardOutput)
+        try Self.validateMediaSizeEvidence(
+            diskutilTotalSize: info.totalSize,
+            diskArbitrationMediaSize: diskArbitrationEvidence.mediaSizeBytes
+        )
         guard info.deviceIdentifier.range(of: #"^disk[0-9]+s[0-9]+$"#, options: .regularExpression) != nil,
               info.parentWholeDisk.range(of: #"^disk[0-9]+$"#, options: .regularExpression) != nil,
-              info.totalSize == Int64(resourceCapacity),
               info.internalMedia == resourceInternal,
               info.removableMedia == resourceRemovable,
               info.writable == !resourceReadOnly,
@@ -158,6 +163,17 @@ public actor DiskutilIdentityResolver {
             throw UMISCoreError.unsafeEraseTarget("Resolved media is internal, non-removable, read-only, or non-ejectable")
         }
         return identity
+    }
+
+    static func validateMediaSizeEvidence(
+        diskutilTotalSize: Int64,
+        diskArbitrationMediaSize: Int64
+    ) throws {
+        guard diskutilTotalSize > 0,
+              diskArbitrationMediaSize > 0,
+              diskutilTotalSize == diskArbitrationMediaSize else {
+            throw UMISCoreError.identityChanged
+        }
     }
 
     private func resolveTopology(wholeDisk: String) async throws -> DiskTopology {

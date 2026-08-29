@@ -3,6 +3,29 @@ import XCTest
 @testable import UMISCore
 
 final class EraseSafetyTests: XCTestCase {
+    func testDiskArbitrationMediaSizeMustMatchDiskutilBeforeIdentityPublication() throws {
+        XCTAssertNoThrow(
+            try DiskutilIdentityResolver.validateMediaSizeEvidence(
+                diskutilTotalSize: 64_000_000,
+                diskArbitrationMediaSize: 64_000_000
+            )
+        )
+        for evidence in [
+            (diskutil: Int64(64_000_000), diskArbitration: Int64(63_999_999)),
+            (diskutil: Int64(0), diskArbitration: Int64(64_000_000)),
+            (diskutil: Int64(64_000_000), diskArbitration: Int64(0)),
+        ] {
+            XCTAssertThrowsError(
+                try DiskutilIdentityResolver.validateMediaSizeEvidence(
+                    diskutilTotalSize: evidence.diskutil,
+                    diskArbitrationMediaSize: evidence.diskArbitration
+                )
+            ) { error in
+                XCTAssertEqual(error as? UMISCoreError, .identityChanged)
+            }
+        }
+    }
+
     func testPhysicalMediaEligibilityRejectsUnknownGenericUSBAndSSD() throws {
         let fixture = try CoreFixture(); defer { fixture.cleanup() }
         var identity = makeStrongVolume(id: SourceVolumeID(), mountURL: fixture.source)

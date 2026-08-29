@@ -7,6 +7,7 @@ OUTPUT_DIR=${UMIS_OUTPUT_DIR:-${PROJECT_DIR}/dist}
 VERSION=$(<"${PROJECT_DIR}/VERSION")
 NOTARY_PROFILE=${UMIS_NOTARY_PROFILE:-}
 SOURCE_ENTITLEMENTS_PATH="${PROJECT_DIR}/Resources/RinkanUMIS.entitlements"
+SOURCE_PRIVACY_MANIFEST_PATH="${PROJECT_DIR}/Resources/PrivacyInfo.xcprivacy"
 
 SEMVER_PATTERN='^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?([+]([0-9A-Za-z-]+)([.][0-9A-Za-z-]+)*)?$'
 if [[ -z "${VERSION}" || "${VERSION}" == *$'\n'* ]] || \
@@ -60,6 +61,8 @@ SOURCE_ENTITLEMENTS_CANONICAL=$(plutil -convert xml1 -o - "${SOURCE_ENTITLEMENTS
 SOURCE_ENTITLEMENTS_SHA256=$(
     print -rn -- "${SOURCE_ENTITLEMENTS_CANONICAL}" | shasum -a 256 | awk '{print $1}'
 )
+"${SCRIPT_DIR}/verify_privacy_manifest.sh" "${SOURCE_PRIVACY_MANIFEST_PATH}" >/dev/null
+SOURCE_PRIVACY_MANIFEST_SHA256=$(shasum -a 256 "${SOURCE_PRIVACY_MANIFEST_PATH}" | awk '{print $1}')
 
 cd "${PROJECT_DIR}"
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -153,13 +156,15 @@ BUNDLE_BUILD_VERSION=$(plutil -extract CFBundleVersion raw -o - "${APP_DIR}/Cont
 MINIMUM_SYSTEM_VERSION=$(plutil -extract LSMinimumSystemVersion raw -o - "${APP_DIR}/Contents/Info.plist")
 BUNDLE_ICON_FILE=$(plutil -extract CFBundleIconFile raw -o - "${APP_DIR}/Contents/Info.plist")
 APP_ICON_PATH="${APP_DIR}/Contents/Resources/${BUNDLE_ICON_FILE}"
+APP_PRIVACY_MANIFEST_PATH="${APP_DIR}/Contents/Resources/PrivacyInfo.xcprivacy"
 SOURCE_ICON_PATH="${PROJECT_DIR}/Resources/RinkanUMIS.icns"
 EXPECTED_BUNDLE_SHORT_VERSION=${VERSION%%[-+]*}
 if [[ "${BUNDLE_IDENTIFIER}" != "jp.rinkan.umis" || \
     "${BUNDLE_SHORT_VERSION}" != "${EXPECTED_BUNDLE_SHORT_VERSION}" || \
     "${MINIMUM_SYSTEM_VERSION}" != "13.0" || \
     "${BUNDLE_ICON_FILE}" != "RinkanUMIS.icns" || ! -s "${APP_ICON_PATH}" || \
-    ! -s "${SOURCE_ICON_PATH}" ]]; then
+    ! -s "${SOURCE_ICON_PATH}" || ! -f "${APP_PRIVACY_MANIFEST_PATH}" || \
+    -L "${APP_PRIVACY_MANIFEST_PATH}" ]]; then
     print -u2 "Bundle identity, marketing version, or deployment target does not match the reviewed release source."
     exit 7
 fi
@@ -167,6 +172,12 @@ APP_ICON_SHA256=$(shasum -a 256 "${APP_ICON_PATH}" | awk '{print $1}')
 SOURCE_ICON_SHA256=$(shasum -a 256 "${SOURCE_ICON_PATH}" | awk '{print $1}')
 if [[ "${APP_ICON_SHA256}" != "${SOURCE_ICON_SHA256}" ]]; then
     print -u2 "The release application icon does not match the reviewed source icon."
+    exit 7
+fi
+"${SCRIPT_DIR}/verify_privacy_manifest.sh" "${APP_PRIVACY_MANIFEST_PATH}" >/dev/null
+APP_PRIVACY_MANIFEST_SHA256=$(shasum -a 256 "${APP_PRIVACY_MANIFEST_PATH}" | awk '{print $1}')
+if [[ "${APP_PRIVACY_MANIFEST_SHA256}" != "${SOURCE_PRIVACY_MANIFEST_SHA256}" ]]; then
+    print -u2 "The release application privacy manifest does not match the reviewed source manifest."
     exit 7
 fi
 
@@ -538,17 +549,27 @@ DMG_APP_MACOS_DIR="${DMG_APP_CONTENTS_DIR}/MacOS"
 DMG_APP_RESOURCES_DIR="${DMG_APP_CONTENTS_DIR}/Resources"
 DMG_APP_EXECUTABLE="${DMG_APP_DIR}/Contents/MacOS/RinkanUMIS"
 DMG_APP_INFO_PLIST="${DMG_APP_DIR}/Contents/Info.plist"
+DMG_APP_PRIVACY_MANIFEST_PATH="${DMG_APP_RESOURCES_DIR}/PrivacyInfo.xcprivacy"
 if [[ ! -d "${DMG_APP_DIR}" || -L "${DMG_APP_DIR}" || \
     ! -d "${DMG_APP_CONTENTS_DIR}" || -L "${DMG_APP_CONTENTS_DIR}" || \
     ! -d "${DMG_APP_MACOS_DIR}" || -L "${DMG_APP_MACOS_DIR}" || \
     ! -d "${DMG_APP_RESOURCES_DIR}" || -L "${DMG_APP_RESOURCES_DIR}" || \
     ! -f "${DMG_APP_EXECUTABLE}" || ! -x "${DMG_APP_EXECUTABLE}" || -L "${DMG_APP_EXECUTABLE}" || \
-    ! -f "${DMG_APP_INFO_PLIST}" || -L "${DMG_APP_INFO_PLIST}" ]]; then
+    ! -f "${DMG_APP_INFO_PLIST}" || -L "${DMG_APP_INFO_PLIST}" || \
+    ! -f "${DMG_APP_PRIVACY_MANIFEST_PATH}" || -L "${DMG_APP_PRIVACY_MANIFEST_PATH}" ]]; then
     print -u2 "The stapled release DMG does not contain the expected regular RINKAN UMIS application bundle."
     exit 9
 fi
 if ! plutil -lint "${DMG_APP_INFO_PLIST}" >/dev/null; then
     print -u2 "The application Info.plist inside the stapled release DMG is malformed."
+    exit 9
+fi
+"${SCRIPT_DIR}/verify_privacy_manifest.sh" "${DMG_APP_PRIVACY_MANIFEST_PATH}" >/dev/null
+DMG_APP_PRIVACY_MANIFEST_SHA256=$(
+    shasum -a 256 "${DMG_APP_PRIVACY_MANIFEST_PATH}" | awk '{print $1}'
+)
+if [[ "${DMG_APP_PRIVACY_MANIFEST_SHA256}" != "${SOURCE_PRIVACY_MANIFEST_SHA256}" ]]; then
+    print -u2 "The privacy manifest inside the stapled release DMG differs from the reviewed source."
     exit 9
 fi
 
@@ -717,6 +738,7 @@ EXPECTED_TEAM_IDENTIFIER="${DMG_EXPECTED_TEAM_IDENTIFIER}"
 EXPECTED_LEAF_AUTHORITY="${DMG_EXPECTED_LEAF_AUTHORITY}"
 APP_UUIDS="${DMG_APP_UUIDS}"
 APP_ICON_SHA256="${DMG_APP_ICON_SHA256}"
+APP_PRIVACY_MANIFEST_SHA256="${DMG_APP_PRIVACY_MANIFEST_SHA256}"
 APP_EXECUTABLE_SHA256="${DMG_APP_EXECUTABLE_SHA256}"
 EMBEDDED_ENTITLEMENTS_SHA256="${DMG_EXPECTED_ENTITLEMENTS_SHA256}"
 CODE_DIRECTORY_HASHES="${DMG_CODE_DIRECTORY_HASHES}"
@@ -772,6 +794,7 @@ DMG_SHA256_TEMP=$(mktemp "${OUTPUT_DIR}/.${DMG_PATH:t}.sha256.XXXXXX")
     print "notary_log_sha256=${NOTARY_DETAIL_SHA256}"
     print "app_executable_sha256=${APP_EXECUTABLE_SHA256}"
     print "app_icon_sha256=${APP_ICON_SHA256}"
+    print "app_privacy_manifest_sha256=${APP_PRIVACY_MANIFEST_SHA256}"
     print "dmg_sha256=${FINAL_DMG_SHA256}"
     print "dsym_sha256=${FINAL_DSYM_SHA256}"
 } > "${RELEASE_MANIFEST_TEMP}"

@@ -9,6 +9,8 @@ APP_NAME="RINKAN UMIS"
 APP_DIR="${OUTPUT_DIR}/${APP_NAME}.app"
 ICON_NAME="RinkanUMIS.icns"
 ICON_SOURCE="${PROJECT_DIR}/Resources/${ICON_NAME}"
+PRIVACY_MANIFEST_NAME="PrivacyInfo.xcprivacy"
+PRIVACY_MANIFEST_SOURCE="${PROJECT_DIR}/Resources/${PRIVACY_MANIFEST_NAME}"
 VERSION=$(<"${PROJECT_DIR}/VERSION")
 # GitHub's default shallow checkout has a history count of one. Its run number is
 # monotonic for the repository and therefore a safer CI build-number fallback.
@@ -31,6 +33,7 @@ if ! print -r -- "${BUILD_NUMBER}" | grep -Eq '^[0-9]+([.][0-9]+){0,2}$'; then
     exit 2
 fi
 plutil -lint "${PROJECT_DIR}/Resources/Info.plist" >/dev/null
+"${PROJECT_DIR}/Scripts/verify_privacy_manifest.sh" "${PRIVACY_MANIFEST_SOURCE}" >/dev/null
 PLIST_ICON_NAME=$(plutil -extract CFBundleIconFile raw -o - "${PROJECT_DIR}/Resources/Info.plist")
 if [[ "${PLIST_ICON_NAME}" != "${ICON_NAME}" || ! -s "${ICON_SOURCE}" ]]; then
     print -u2 "The reviewed application icon is missing or does not match CFBundleIconFile."
@@ -48,6 +51,7 @@ if [[ "${ICON_FORMAT}" != "icns" || "${ICON_WIDTH}" != "1024" || \
     exit 2
 fi
 SOURCE_ICON_SHA256=$(shasum -a 256 "${ICON_SOURCE}" | awk '{print $1}')
+SOURCE_PRIVACY_MANIFEST_SHA256=$(shasum -a 256 "${PRIVACY_MANIFEST_SOURCE}" | awk '{print $1}')
 
 IDENTITY=${UMIS_CODESIGN_IDENTITY:-}
 ALLOW_ADHOC=${UMIS_ALLOW_ADHOC:-0}
@@ -134,6 +138,7 @@ ditto "${EXECUTABLE}" "${STAGED_APP}/Contents/MacOS/RinkanUMIS"
 ditto "${PROJECT_DIR}/Resources/Info.plist" "${STAGED_APP}/Contents/Info.plist"
 ditto "${PROJECT_DIR}/Sources/RinkanUMIS/Resources" "${STAGED_APP}/Contents/Resources"
 ditto "${ICON_SOURCE}" "${STAGED_APP}/Contents/Resources/${ICON_NAME}"
+ditto "${PRIVACY_MANIFEST_SOURCE}" "${STAGED_APP}/Contents/Resources/${PRIVACY_MANIFEST_NAME}"
 if [[ -d "${BIN_DIR}/RinkanUMIS_RinkanUMIS.bundle" ]]; then
     ditto "${BIN_DIR}/RinkanUMIS_RinkanUMIS.bundle" "${STAGED_APP}/Contents/Resources/RinkanUMIS_RinkanUMIS.bundle"
 fi
@@ -152,6 +157,13 @@ fi
 STAGED_ICON_SHA256=$(shasum -a 256 "${STAGED_APP}/Contents/Resources/${ICON_NAME}" | awk '{print $1}')
 if [[ "${STAGED_ICON_SHA256}" != "${SOURCE_ICON_SHA256}" ]]; then
     print -u2 "The staged application icon does not match the reviewed source icon."
+    exit 2
+fi
+STAGED_PRIVACY_MANIFEST="${STAGED_APP}/Contents/Resources/${PRIVACY_MANIFEST_NAME}"
+"${PROJECT_DIR}/Scripts/verify_privacy_manifest.sh" "${STAGED_PRIVACY_MANIFEST}" >/dev/null
+STAGED_PRIVACY_MANIFEST_SHA256=$(shasum -a 256 "${STAGED_PRIVACY_MANIFEST}" | awk '{print $1}')
+if [[ "${STAGED_PRIVACY_MANIFEST_SHA256}" != "${SOURCE_PRIVACY_MANIFEST_SHA256}" ]]; then
+    print -u2 "The staged privacy manifest does not match the reviewed source manifest."
     exit 2
 fi
 
@@ -265,6 +277,7 @@ fi
     print "swift=$(swift --version | head -n 1)"
     print "app_executable_sha256=$(shasum -a 256 "${APP_DIR}/Contents/MacOS/RinkanUMIS" | awk '{print $1}')"
     print "app_icon_sha256=${SOURCE_ICON_SHA256}"
+    print "app_privacy_manifest_sha256=${SOURCE_PRIVACY_MANIFEST_SHA256}"
     print "signature=$(codesign -dv "${APP_DIR}" 2>&1 | tr '\n' ' ')"
 } > "${MANIFEST}"
 

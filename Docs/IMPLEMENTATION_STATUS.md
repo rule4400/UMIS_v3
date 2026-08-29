@@ -8,12 +8,12 @@
 
 - Swift 6 / macOS 13 target
 - 全target `swift build -j 1 -Xswiftc -warnings-as-errors`: 成功
-- 全自動test: 286件実行、失敗0件、環境条件付き1件skip（`swift test --parallel`、Adobe XMP／Finderカラー／大量件数／適応的media sizing／cache隔離／撮影日時cancel／LAN排他・status統合／物理カードscan中抜去／network mount通知順序の最終tree）。skip対象のcase-sensitive APFS同stem衝突試験はcase-sensitive APFS disk image上で別途成功
+- 全自動test: 289件実行、失敗0件、環境条件付き1件skip（`swift test --parallel`、Adobe XMP容量証拠／Finderカラー／大量件数／適応的media sizing／cache隔離／撮影日時cancel／LAN排他・status統合／物理カードscan中抜去／network mount通知順序の最終tree）。skip対象のcase-sensitive APFS同stem衝突試験はcase-sensitive APFS disk image上で別途成功
 - Universal 2 local build: arm64 / x86_64、両slice macOS 13.0
 - arm64 native起動smoke: 成功
 - x86_64 Rosetta起動smoke: 成功
 - ad-hoc codesign + Hardened Runtime整合性: 成功
-- Developer ID / notarization: `CHECK HOUSE, K.K. (FA43T8UK3P)` identityと`UMIS_NOTARY` profileをKeychainに導入済み。`0.2.0-alpha.4`はAccepted／staple／Gatekeeper検証成功。現行`0.2.0-alpha.5` feature buildはDeveloper ID署名済みだが、公証未送信
+- Developer ID / notarization: `CHECK HOUSE, K.K. (FA43T8UK3P)` identityと`UMIS_NOTARY` profileをKeychainに導入済み。`0.2.0-alpha.4`はAccepted／staple／Gatekeeper検証成功。`0.2.0-alpha.5`はrelease候補であり、最終状態は固定tagに対応するrelease manifest／notary logを正本として判定
 - 現行UIのarm64実行確認: JPEG／PNG／TIFF／PSD／MOVの5件でXMP 5つ星、明示0、Finderレッド／解除、再読込み／再スキャン後の保持、検索、写真／動画previewを隔離fixtureで確認済み
 
 ## 機能別状態
@@ -34,7 +34,7 @@
 | LAN Scene Catalog | signed full snapshot、revision、tombstone、Keychain pairing、fresh TLS-PSK proof、explicit apply＋application lease/CAS、親AppModelへの操作状態伝播 | signature、rollback、split-brain、PSK rotation/session再開拒否、fetch/apply race／UI排他publication test成功 | 複数実Mac未実施 | 実験機能・production不可 |
 | NAS／SMB／NFS destination | mount lifecycle authority＋generation＋volume/filesystem/device/inode署名を全I/O境界へ結線し、callback順と非同期handler完了順を直列化 | unmount／remount／通知遅延／stale event／非同期handler追越し防止／provider test成功 | 実share・切断・ACL・長時間試験なし | copy-gradeのみ |
 | SD Management boundary | Disabled Gateway、canonical event、durable outbox | retry／idempotency／dead-letter test成功 | staging APIなし | adapterなし |
-| Developer ID署名／公証 | Universal 2／Hardened Runtime／secure timestamp／DMG／notary／staple／Gatekeeper、最終DMG内appのread-only再検証、transactional artifact公開をfail-closed実行 | shell/plist/static検査、独立verifierによる既存公証版の再検証成功 | `0.2.0-alpha.4` Accepted、警告0、staple／Gatekeeper成功 | release manifestで個別判定 |
+| Developer ID署名／公証 | Universal 2／Hardened Runtime／secure timestamp／privacy manifest／DMG／notary／staple／Gatekeeper、最終DMG内appのread-only再検証、transactional artifact公開をfail-closed実行 | shell/plist/static検査、privacy用途／source hash結合、独立verifierによる既存公証版の再検証成功 | `0.2.0-alpha.4` Accepted、警告0、staple／Gatekeeper成功 | release manifestで個別判定 |
 | Git／rollback | GitHub main基点、annotated bootstrap tag、hooks、worktree rollback | hook構文／tests成功 | remote push済み | 利用可能 |
 
 ## Alphaで意図的に無効または制限する機能

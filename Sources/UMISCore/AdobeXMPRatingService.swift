@@ -280,6 +280,20 @@ public struct AdobeXMPRatingFormatSupport: Hashable, Sendable {
 /// fallbacks use strict filename-plus-extension sidecars, preventing same-stem RAW/JPEG/MOV assets
 /// from sharing metadata accidentally.
 public struct AdobeXMPRatingService: Sendable {
+    private enum AvailableCapacityEvidenceSource: Sendable {
+        case volumeResourceValues
+        case testingOverride(Int64?)
+
+        func resolve(from values: URLResourceValues) -> Int64? {
+            switch self {
+            case .volumeResourceValues:
+                return values.volumeAvailableCapacityForImportantUsage
+            case let .testingOverride(availableCapacity):
+                return availableCapacity
+            }
+        }
+    }
+
     public static let formatSupport = AdobeXMPRatingFormatSupport(
         embeddedStillExtensions: [
             "jpg", "jpeg", "tif", "tiff", "dng", "psd", "png", "gif",
@@ -329,18 +343,22 @@ public struct AdobeXMPRatingService: Sendable {
 
     public let configuration: AdobeXMPRatingConfiguration
     private let embeddedRecoveryTestFault: AdobeXMPEmbeddedRecoveryTestFault?
+    private let availableCapacityEvidenceSource: AvailableCapacityEvidenceSource
 
     public init(configuration: AdobeXMPRatingConfiguration = .default) {
         self.configuration = configuration
         embeddedRecoveryTestFault = nil
+        availableCapacityEvidenceSource = .volumeResourceValues
     }
 
     init(
         configuration: AdobeXMPRatingConfiguration = .default,
-        embeddedRecoveryTestFault: AdobeXMPEmbeddedRecoveryTestFault
+        availableCapacityForTesting: Int64?,
+        embeddedRecoveryTestFault: AdobeXMPEmbeddedRecoveryTestFault? = nil
     ) {
         self.configuration = configuration
         self.embeddedRecoveryTestFault = embeddedRecoveryTestFault
+        availableCapacityEvidenceSource = .testingOverride(availableCapacityForTesting)
     }
 
     public func probe(
@@ -1448,7 +1466,7 @@ public struct AdobeXMPRatingService: Sendable {
             isEjectable: isEjectable,
             isRemovable: isRemovable,
             isReadOnly: isReadOnly,
-            availableCapacity: values.volumeAvailableCapacityForImportantUsage
+            availableCapacity: availableCapacityEvidenceSource.resolve(from: values)
         )
     }
 

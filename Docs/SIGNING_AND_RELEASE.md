@@ -13,7 +13,7 @@
 - certificateに対応するprivate key: login Keychainに導入済み
 - `notarytool` Keychain profile `UMIS_NOTARY`: 登録・認証済み
 - `0.2.0-alpha.4`: Apple Notary Service `Accepted`、ticket staple、Gatekeeper検証済み
-- 現行`0.2.0-alpha.5` feature build: Developer ID署名済み。review済みtagではないため公証未送信
+- 現行`0.2.0-alpha.5`: release候補。公証状態は固定tagに対応するrelease manifest／notary logを正本として判定
 
 private key、Apple IDのapp-specific password、notary credentialはKeychainのみに保存し、repository、`.env`、build manifest、DMGには含めません。各releaseが実際に配布可能かどうかは、対応するrelease manifest、notary submission ID／log、stapler／Gatekeeper結果を正本とします。
 
@@ -69,8 +69,9 @@ release scriptは次の条件をfail-closedで要求します。
 - appとdSYMのUUID一致
 - `jp.rinkan.umis`、macOS 13.0 deployment target、全sliceのTeam ID／Developer ID一致
 - JIT／unsigned executable memory／library validation無効化等の危険なentitlementなし
+- `PrivacyInfo.xcprivacy`がAppleのRequired Reason API用途（Disk Space `E174.1`、File Timestamp `C617.1`／`3B52.1`）と一致し、`Contents/Resources`へ同梱
 - staple後のDMGをread-onlyで再マウントし、内包appの署名、Universal 2、bundle metadata、entitlements、icon、dSYM UUIDを直接再検証
-- release manifestにsource tree、DB schema、toolchain、DMG内app／dSYM／DMG／notary logのSHA-256を記録
+- release manifestにsource tree、DB schema、toolchain、DMG内app／icon／privacy manifest／dSYM／DMG／notary logのSHA-256を記録
 - 最終DMG、checksum、manifestの公開途中で失敗した場合は直前のartifactを復元
 
 alpha／rcを含む候補版は、testとreview完了後に`VERSION`と同じannotated tagを付けます。既にpushしたtagの打ち替えやforce-pushは行いません。

@@ -175,6 +175,20 @@ else
     fail "app_icon_sha256 must occur exactly once; only 0.2.0-alpha.3 may omit it."
 fi
 
+PRIVACY_MANIFEST_KEY_COUNT=$(manifest_key_count app_privacy_manifest_sha256)
+PRIVACY_MANIFEST_EVIDENCE_AVAILABLE=0
+if [[ "${PRIVACY_MANIFEST_KEY_COUNT}" == "1" ]]; then
+    MANIFEST_PRIVACY_MANIFEST_SHA256=$(manifest_value app_privacy_manifest_sha256)
+    [[ "${MANIFEST_PRIVACY_MANIFEST_SHA256}" =~ '^[0-9a-fA-F]{64}$' ]] ||
+        fail "Manifest app_privacy_manifest_sha256 is malformed."
+    PRIVACY_MANIFEST_EVIDENCE_AVAILABLE=1
+elif [[ "${PRIVACY_MANIFEST_KEY_COUNT}" == "0" && \
+    ("${VERIFY_VERSION}" == "0.2.0-alpha.3" || "${VERIFY_VERSION}" == "0.2.0-alpha.4") ]]; then
+    print -- "SKIP: privacy-manifest binding (legacy ${VERIFY_VERSION} manifest)."
+else
+    fail "app_privacy_manifest_sha256 must occur exactly once; only alpha.3 and alpha.4 may omit it."
+fi
+
 VALIDATION_SOURCE_KEY_COUNT=$(manifest_key_count app_validation_source)
 ENTITLEMENTS_KEY_COUNT=$(manifest_key_count app_entitlements_sha256)
 CODE_DIRECTORY_KEY_COUNT=$(manifest_key_count app_code_directory_hashes)
@@ -265,6 +279,19 @@ fi
 TAG_VERSION=$(git show "${MANIFEST_COMMIT}:VERSION")
 [[ "${TAG_VERSION}" == "${VERIFY_VERSION}" ]] ||
     fail "VERSION in the release commit differs from the manifest."
+
+if [[ "${PRIVACY_MANIFEST_EVIDENCE_AVAILABLE}" == "1" ]]; then
+    git cat-file -e "${MANIFEST_COMMIT}:Resources/PrivacyInfo.xcprivacy" ||
+        fail "Tagged release source does not contain PrivacyInfo.xcprivacy."
+    git show "${MANIFEST_COMMIT}:Resources/PrivacyInfo.xcprivacy" |
+        plutil -lint - >/dev/null || fail "Tagged release privacy manifest is malformed."
+    TAGGED_PRIVACY_MANIFEST_SHA256=$(
+        git show "${MANIFEST_COMMIT}:Resources/PrivacyInfo.xcprivacy" |
+            shasum -a 256 | awk '{print $1}'
+    )
+    [[ "${TAGGED_PRIVACY_MANIFEST_SHA256}" == "${MANIFEST_PRIVACY_MANIFEST_SHA256:l}" ]] ||
+        fail "Tagged privacy manifest SHA-256 differs from the release manifest."
+fi
 
 if [[ "${FINAL_APP_EVIDENCE_AVAILABLE}" == "1" ]]; then
     TAGGED_SOURCE_ENTITLEMENTS=$(
@@ -485,6 +512,7 @@ mount | grep -F "${MOUNT_DEVICE} on " | grep -q 'read-only' ||
 APP_PATH="${MOUNT_POINT}/RINKAN UMIS.app"
 APP_EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/RinkanUMIS"
 APP_INFO_PATH="${APP_PATH}/Contents/Info.plist"
+APP_PRIVACY_MANIFEST_PATH="${APP_PATH}/Contents/Resources/PrivacyInfo.xcprivacy"
 APP_CONTENTS_PATH="${APP_PATH}/Contents"
 APP_MACOS_PATH="${APP_CONTENTS_PATH}/MacOS"
 APP_RESOURCES_PATH="${APP_CONTENTS_PATH}/Resources"
@@ -499,6 +527,19 @@ APP_RESOURCES_PATH="${APP_CONTENTS_PATH}/Resources"
 [[ -f "${APP_INFO_PATH}" && ! -L "${APP_INFO_PATH}" ]] ||
     fail "App Info.plist is missing, non-regular, or a symlink."
 plutil -lint "${APP_INFO_PATH}" >/dev/null || fail "App Info.plist is malformed."
+if [[ "${PRIVACY_MANIFEST_EVIDENCE_AVAILABLE}" == "1" ]]; then
+    [[ -f "${APP_PRIVACY_MANIFEST_PATH}" && ! -L "${APP_PRIVACY_MANIFEST_PATH}" ]] ||
+        fail "App privacy manifest is missing, non-regular, or a symlink."
+    "${SCRIPT_DIR}/verify_privacy_manifest.sh" "${APP_PRIVACY_MANIFEST_PATH}" >/dev/null ||
+        fail "App privacy manifest declarations differ from the reviewed policy."
+    ACTUAL_PRIVACY_MANIFEST_SHA256=$(
+        shasum -a 256 "${APP_PRIVACY_MANIFEST_PATH}" | awk '{print $1}'
+    )
+    [[ "${ACTUAL_PRIVACY_MANIFEST_SHA256}" == "${MANIFEST_PRIVACY_MANIFEST_SHA256:l}" ]] ||
+        fail "App privacy manifest SHA-256 differs from the release manifest."
+    [[ "${ACTUAL_PRIVACY_MANIFEST_SHA256}" == "${TAGGED_PRIVACY_MANIFEST_SHA256}" ]] ||
+        fail "App privacy manifest differs from the tagged release source."
+fi
 [[ -L "${MOUNT_POINT}/Applications" ]] || fail "Applications symlink is missing."
 [[ "$(readlink "${MOUNT_POINT}/Applications")" == "/Applications" ]] ||
     fail "Applications symlink has an unexpected target."
@@ -712,3 +753,6 @@ print -- "  notarization: ${MANIFEST_NOTARY_ID} (${MANIFEST_NOTARY_STATUS})"
 print -- "  DMG SHA-256: ${ACTUAL_DMG_SHA256}"
 print -- "  architectures: ${ACTUAL_ARCHITECTURES}"
 print -- "  Team ID: ${MANIFEST_TEAM_IDENTIFIER}"
+if [[ "${PRIVACY_MANIFEST_EVIDENCE_AVAILABLE}" == "1" ]]; then
+    print -- "  privacy manifest SHA-256: ${ACTUAL_PRIVACY_MANIFEST_SHA256}"
+fi

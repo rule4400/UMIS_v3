@@ -30,6 +30,14 @@ jobs:
       - name: Verify pinned Adobe XMP binary
         run: Vendor/AdobeXMP/Scripts/verify_xcframework.sh
 
+      - name: Verify privacy manifest
+        run: Scripts/verify_privacy_manifest.sh Resources/PrivacyInfo.xcprivacy
+
+      - name: Record disk-capacity evidence
+        run: |
+          df -h .
+          swift -e 'import Foundation; let url = FileManager.default.temporaryDirectory; let values = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityForOpportunisticUsageKey]); print("temporary=\(url.path) ordinary=\(String(describing: values.volumeAvailableCapacity)) important=\(String(describing: values.volumeAvailableCapacityForImportantUsage)) opportunistic=\(String(describing: values.volumeAvailableCapacityForOpportunisticUsage))")'
+
       - name: Test
         run: swift test --parallel
 

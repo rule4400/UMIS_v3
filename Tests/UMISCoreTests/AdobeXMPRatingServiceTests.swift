@@ -6,6 +6,7 @@ import XCTest
 
 final class AdobeXMPRatingServiceTests: XCTestCase {
     private let mutationContext = AdobeXMPRatingMutationContext(hasLatestVerifiedReceipt: false)
+    private let deterministicAvailableCapacity: Int64 = 1_024 * 1_024 * 1_024
 
     func testCoreVolumePolicyRejectsNASExternalEjectableRemovableAndReadOnlyEvidence() throws {
         XCTAssertNoThrow(
@@ -128,6 +129,82 @@ final class AdobeXMPRatingServiceTests: XCTestCase {
                 XCTAssertNotNil(CGImageSourceCreateImageAtIndex(imageSource, 0, nil), testCase.destination)
             }
         }
+    }
+
+    func testEmbeddedSafeUpdateFailsClosedForUnavailableAndInsufficientCapacityEvidence() throws {
+        let fixture = try AdobeXMPFixture()
+        defer { fixture.cleanup() }
+        let media = try fixture.copyBundledFixture(
+            named: "BlueSquare.jpg",
+            destinationName: "capacity.jpg"
+        )
+        let originalBytes = try Data(contentsOf: media)
+        let expected = try FileFingerprint.capture(at: media)
+
+        for availableCapacity: Int64? in [nil, 0] {
+            let service = makeService(availableCapacityForTesting: availableCapacity)
+            XCTAssertThrowsError(
+                try service.writeRating(
+                    .oneStar,
+                    mediaURL: media,
+                    expectedFingerprint: expected,
+                    context: mutationContext
+                )
+            ) { error in
+                switch availableCapacity {
+                case .none:
+                    XCTAssertEqual(
+                        error as? AdobeXMPRatingServiceError,
+                        .incompleteVolumeSafetyEvidence("safe-update capacity")
+                    )
+                case .some(0):
+                    XCTAssertEqual(
+                        error as? AdobeXMPRatingServiceError,
+                        .insufficientSafeUpdateSpace(required: expected.byteSize, available: 0)
+                    )
+                case .some(_):
+                    XCTFail("Unexpected capacity fixture")
+                }
+            }
+            XCTAssertEqual(try FileFingerprint.capture(at: media), expected)
+            XCTAssertEqual(try Data(contentsOf: media), originalBytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: media.path + ".xmp"))
+            XCTAssertTrue(
+                try FileManager.default.contentsOfDirectory(atPath: fixture.root.path)
+                    .allSatisfy { !$0.hasPrefix(".umis-xmp-") }
+            )
+        }
+    }
+
+    func testDynamicEmbeddedCandidateFallsBackToAppendedSidecarWhenCapacityIsInsufficient() throws {
+        let fixture = try AdobeXMPFixture()
+        defer { fixture.cleanup() }
+        let media = try fixture.copyBundledFixture(
+            named: "BlueSquare.mov",
+            destinationName: "capacity.mov"
+        )
+        let originalBytes = try Data(contentsOf: media)
+        let expected = try FileFingerprint.capture(at: media)
+        let service = makeService(
+            maximumEmbeddedDynamicMediaBytes: Int64.max,
+            availableCapacityForTesting: 0
+        )
+
+        let written = try service.writeRating(
+            .twoStars,
+            mediaURL: media,
+            expectedFingerprint: expected,
+            context: mutationContext
+        )
+
+        XCTAssertEqual(written.storage, .compatibilityUnverifiedSidecar)
+        XCTAssertEqual(written.fingerprintAfter, expected)
+        XCTAssertEqual(try Data(contentsOf: media), originalBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: media.path + ".xmp"))
+        XCTAssertEqual(
+            try service.readRating(mediaURL: media, expectedFingerprint: expected).rating,
+            .twoStars
+        )
     }
 
     func testGIFSmartHandlerRoundTripsEmbeddedRating() throws {
@@ -819,6 +896,7 @@ final class AdobeXMPRatingServiceTests: XCTestCase {
                 maximumEmbeddedDynamicMediaBytes: Int64.max,
                 safeUpdateReserveBytes: 0
             ),
+            availableCapacityForTesting: deterministicAvailableCapacity,
             embeddedRecoveryTestFault: .failUpperReadback
         )
 
@@ -871,6 +949,7 @@ final class AdobeXMPRatingServiceTests: XCTestCase {
                 maximumEmbeddedDynamicMediaBytes: Int64.max,
                 safeUpdateReserveBytes: 0
             ),
+            availableCapacityForTesting: deterministicAvailableCapacity,
             embeddedRecoveryTestFault: .replaceTargetBeforeFinalization
         )
 
@@ -923,6 +1002,7 @@ final class AdobeXMPRatingServiceTests: XCTestCase {
                 maximumEmbeddedDynamicMediaBytes: Int64.max,
                 safeUpdateReserveBytes: 0
             ),
+            availableCapacityForTesting: deterministicAvailableCapacity,
             embeddedRecoveryTestFault: .changeTargetMetadataBeforeFinalization
         )
 
@@ -1175,13 +1255,15 @@ final class AdobeXMPRatingServiceTests: XCTestCase {
     }
 
     private func makeService(
-        maximumEmbeddedDynamicMediaBytes: Int64 = 4 * 1_024 * 1_024 * 1_024
+        maximumEmbeddedDynamicMediaBytes: Int64 = 4 * 1_024 * 1_024 * 1_024,
+        availableCapacityForTesting: Int64? = 1_024 * 1_024 * 1_024
     ) -> AdobeXMPRatingService {
         AdobeXMPRatingService(
             configuration: AdobeXMPRatingConfiguration(
                 maximumEmbeddedDynamicMediaBytes: maximumEmbeddedDynamicMediaBytes,
                 safeUpdateReserveBytes: 0
-            )
+            ),
+            availableCapacityForTesting: availableCapacityForTesting
         )
     }
 }
