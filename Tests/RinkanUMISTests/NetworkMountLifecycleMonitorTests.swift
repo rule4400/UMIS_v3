@@ -324,6 +324,62 @@ final class NetworkMountLifecycleMonitorTests: XCTestCase {
     XCTAssertEqual(events[1].kind, .unmounted)
     XCTAssertEqual(events[1].mountURL, root)
     XCTAssertNotEqual(events[0].lifecycleEpoch, events[1].lifecycleEpoch)
+    XCTAssertEqual(
+      source.currentLifecycleEpoch(for: root),
+      events[1].lifecycleEpoch,
+      "The last delivered event must match the synchronously observed lifecycle epoch"
+    )
+  }
+
+  func testNSWorkspaceEventSourceSerializesAsyncHandlerDelivery() async throws {
+    let center = NotificationCenter()
+    let source = NSWorkspaceNetworkMountLifecycleEventSource(notificationCenter: center)
+    let root = URL(fileURLWithPath: "/Volumes/UMIS-Test-Serial-Notifications", isDirectory: true)
+    let mountedStarted = SendableExpectation(
+      XCTestExpectation(description: "mounted handler started")
+    )
+    let prematureUnmount = SendableExpectation(
+      XCTestExpectation(description: "unmounted handler must wait for mounted handler")
+    )
+    prematureUnmount.value.isInverted = true
+    let bothFinished = SendableExpectation(
+      XCTestExpectation(description: "both lifecycle handlers finished")
+    )
+    bothFinished.value.expectedFulfillmentCount = 2
+    let gate = TestAsyncGate()
+    let received = LockedEvents()
+
+    source.setEventHandler { event in
+      switch event.kind {
+      case .mounted:
+        mountedStarted.value.fulfill()
+        await gate.wait()
+      case .unmounted:
+        if !gate.isOpen {
+          prematureUnmount.value.fulfill()
+        }
+      }
+      received.append(event)
+      bothFinished.value.fulfill()
+    }
+
+    center.post(
+      name: NSWorkspace.didMountNotification,
+      object: nil,
+      userInfo: [NSWorkspace.volumeURLUserInfoKey: root]
+    )
+    await fulfillment(of: [mountedStarted.value], timeout: 2)
+
+    center.post(
+      name: NSWorkspace.didUnmountNotification,
+      object: nil,
+      userInfo: [NSWorkspace.volumeURLUserInfoKey: root]
+    )
+    await fulfillment(of: [prematureUnmount.value], timeout: 0.25)
+
+    gate.open()
+    await fulfillment(of: [bothFinished.value], timeout: 2)
+    XCTAssertEqual(received.value.map(\.kind), [.mounted, .unmounted])
   }
 }
 
@@ -436,6 +492,41 @@ private final class SendableExpectation: @unchecked Sendable {
 
   init(_ value: XCTestExpectation) {
     self.value = value
+  }
+}
+
+private final class TestAsyncGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var opened = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  var isOpen: Bool {
+    lock.withLock { opened }
+  }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in
+      let shouldResume = lock.withLock { () -> Bool in
+        guard !opened else { return true }
+        waiters.append(continuation)
+        return false
+      }
+      if shouldResume {
+        continuation.resume()
+      }
+    }
+  }
+
+  func open() {
+    let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      guard !opened else { return [] }
+      opened = true
+      defer { waiters.removeAll(keepingCapacity: false) }
+      return waiters
+    }
+    for waiter in pending {
+      waiter.resume()
+    }
   }
 }
 

@@ -37,6 +37,10 @@ final class NSWorkspaceNetworkMountLifecycleEventSource: NetworkMountLifecycleEv
   private var handler: (@Sendable (NetworkMountLifecycleEvent) async -> Void)?
   private var observerTokens: [NSObjectProtocol] = []
   private var lifecycleEpochsByMountPath: [String: UUID] = [:]
+  /// Tail of the asynchronous delivery chain. `NSLock` gives lifecycle callbacks a total order;
+  /// chaining handler work while that same lock is held preserves that order after the callback
+  /// crosses into Swift concurrency. Independent unstructured tasks may start in reverse order.
+  private var deliveryTail: Task<Void, Never>?
   private var started = false
 
   init(notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
@@ -86,27 +90,22 @@ final class NSWorkspaceNetworkMountLifecycleEventSource: NetworkMountLifecycleEv
       return
     }
     let normalizedURL = Self.normalizedMountURL(volumeURL)
-    let eventAndHandler = lock.withLock {
-      () -> (
-        NetworkMountLifecycleEvent,
-        (@Sendable (NetworkMountLifecycleEvent) async -> Void)?
-      ) in
+    lock.withLock {
       let epoch = UUID()
       lifecycleEpochsByMountPath[Self.mountKey(normalizedURL)] = epoch
-      return (
-        NetworkMountLifecycleEvent(
-          kind: mounted ? .mounted : .unmounted,
-          mountURL: normalizedURL,
-          lifecycleEpoch: epoch
-        ),
-        handler
+      let event = NetworkMountLifecycleEvent(
+        kind: mounted ? .mounted : .unmounted,
+        mountURL: normalizedURL,
+        lifecycleEpoch: epoch
       )
-    }
-    let event = eventAndHandler.0
-    let currentHandler = eventAndHandler.1
-    guard let currentHandler else { return }
-    Task {
-      await currentHandler(event)
+      guard let currentHandler = handler else { return }
+
+      let predecessor = deliveryTail
+      deliveryTail = Task {
+        await predecessor?.value
+        guard !Task.isCancelled else { return }
+        await currentHandler(event)
+      }
     }
   }
 
@@ -121,10 +120,11 @@ final class NSWorkspaceNetworkMountLifecycleEventSource: NetworkMountLifecycleEv
   }
 
   deinit {
-    let tokens = lock.withLock { observerTokens }
+    let (tokens, pendingDelivery) = lock.withLock { (observerTokens, deliveryTail) }
     for token in tokens {
       notificationCenter.removeObserver(token)
     }
+    pendingDelivery?.cancel()
   }
 
   private static func normalizedMountURL(_ url: URL) -> URL {
