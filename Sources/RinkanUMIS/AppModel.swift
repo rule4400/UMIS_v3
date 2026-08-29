@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 import UMISCore
@@ -32,15 +33,120 @@ final class AppModel: ObservableObject {
     }
     @Published var renameSourceURL: URL?
     @Published var renameDestinationURL: URL?
-    @Published var assets: [AppAsset] = []
+    @Published var assets: [AppAsset] = [] {
+        didSet { rebuildIngestAssetProjection(sourceChanged: true) }
+    }
     @Published var selectedAssetIDs: Set<UUID> = []
+    @Published var ingestAssetSearchText = "" {
+        didSet {
+            guard oldValue != ingestAssetSearchText else { return }
+            rebuildIngestAssetProjection(sourceChanged: false)
+        }
+    }
+    @Published var ingestAssetCategoryFilter: AssetCategory? {
+        didSet {
+            guard oldValue != ingestAssetCategoryFilter else { return }
+            rebuildIngestAssetProjection(sourceChanged: false)
+        }
+    }
+    @Published var reviewSourceURL: URL?
+    @Published var reviewAssets: [AppAsset] = [] {
+        didSet { rebuildReviewAssetProjection(sourceChanged: true) }
+    }
+    @Published var reviewSelectedAssetIDs: Set<UUID> = []
+    @Published var reviewAssetSearchText = "" {
+        didSet {
+            guard oldValue != reviewAssetSearchText else { return }
+            rebuildReviewAssetProjection(sourceChanged: false)
+        }
+    }
+    @Published var reviewAssetCategoryFilter: AssetCategory? {
+        didSet {
+            guard oldValue != reviewAssetCategoryFilter else { return }
+            rebuildReviewAssetProjection(sourceChanged: false)
+        }
+    }
+    @Published var reviewRatings: [UUID: AdobeRating] = [:] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewRatingLoadedAssetIDs: Set<UUID> = [] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewRatingExplicitAssetIDs: Set<UUID> = [] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewRatingErrors: [UUID: String] = [:] {
+        didSet {
+            rebuildReviewMetadataErrorProjection()
+            bumpReviewCollectionMetadataRevision()
+        }
+    }
+    @Published var reviewLabelNumbers: [UUID: Int] = [:] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewLabelLoadedAssetIDs: Set<UUID> = [] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewLabelErrors: [UUID: String] = [:] {
+        didSet {
+            rebuildReviewMetadataErrorProjection()
+            bumpReviewCollectionMetadataRevision()
+        }
+    }
+    @Published var reviewMetadataWarnings: [UUID: String] = [:] {
+        didSet { bumpReviewCollectionMetadataRevision() }
+    }
+    @Published var reviewMetadataRecoveryRecords: [MetadataRecoveryRecord] = []
+    @Published var reviewMetadataRecoveryScanWasTruncated = false
+    @Published var reviewMetadataRecoveryScanError: String?
+    @Published var reviewUnsupportedRegularFileCount = 0
+    @Published var reviewUnsupportedRegularFileSamples: [String] = []
+    @Published var reviewScanIssueCount = 0
+    @Published var reviewScanIssueSamples: [String] = []
+    @Published var reviewIsScanning = false
+    @Published var reviewMetadataIsLoading = false {
+        didSet {
+            guard oldValue != reviewMetadataIsLoading else { return }
+            bumpReviewCollectionMetadataRevision()
+        }
+    }
+    @Published var reviewMetadataIsWriting = false
+    @Published var reviewSourceIsReadOnly: Bool?
+    @Published var reviewSourceIsLocal = false
+    @Published var reviewSourceIsEjectable = true
+    @Published var reviewSourceIsInternal = false
+    @Published var ingestThumbnailReloadGeneration = UUID()
+    @Published var reviewThumbnailReloadGeneration = UUID() {
+        didSet {
+            guard oldValue != reviewThumbnailReloadGeneration else { return }
+            bumpReviewCollectionMetadataRevision()
+        }
+    }
+    @Published var reviewStatusMessage = "評価するアーカイブを選択してください"
     @Published private(set) var policyReviewAssetIDs: Set<UUID> = []
-    @Published private(set) var explicitlyExcludedAssetIDs: Set<UUID> = []
+    @Published private(set) var explicitlyExcludedAssetIDs: Set<UUID> = [] {
+        didSet {
+            ingestIncludedAssetIDs = ingestAllAssetIDs.subtracting(explicitlyExcludedAssetIDs)
+            rebuildIngestExclusionProjections()
+            rebuildAssignedIncludedAssetCount()
+            bumpIngestCollectionMetadataRevision()
+        }
+    }
     @Published var showAssetExclusionConfirmation = false
     @Published private(set) var emptyDirectoryReviewPaths: [String] = []
     @Published var showEmptyDirectoryExclusionConfirmation = false
-    @Published var sceneAssignments: [UUID: UUID] = [:]
-    @Published var scenes: [AppScene]
+    @Published var sceneAssignments: [UUID: UUID] = [:] {
+        didSet {
+            rebuildSceneAssignmentCounts()
+            bumpIngestCollectionMetadataRevision()
+        }
+    }
+    @Published var scenes: [AppScene] {
+        didSet {
+            sceneNamesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0.name) })
+            bumpIngestCollectionMetadataRevision()
+        }
+    }
     @Published var selectedSceneID: UUID? { didSet { invalidatePreparedRenamePreviewIfNeeded() } }
     @Published var projectName = "新規プロジェクト" {
         didSet {
@@ -92,7 +198,10 @@ final class AppModel: ObservableObject {
     @Published var sdManagementEnabled = false
     @Published var lanCatalogEnabled = false
     @Published private(set) var lanSceneCatalog: LANSceneCatalogCoordinator?
+    @Published private(set) var lanOperationInProgress = false
+    @Published private(set) var lanStatusMessage = "LANシーン共有は停止中です"
     @Published var mediaCacheSummary = "初期化中"
+    @Published private(set) var mediaCacheStatusMessage = "派生キャッシュは原本へ影響せず、必要時に再生成できます"
     @Published var previewAsset: AppAsset?
     @Published private(set) var latestVerifiedReceipt: IngestReceipt?
     @Published var renamePreviewRows: [RenamePreviewRow] = []
@@ -123,14 +232,51 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastDeletedProjectID: UUID?
     @Published private(set) var destructiveOutcomeQuarantined = false
     @Published private(set) var mediaAccessQuiescenceLatched = false
+    @Published private(set) var mediaReadIsolationFailed = false
     @Published private(set) var captureDateMetadataIsLoading = false
+    @Published private(set) var mediaCacheOperationInFlight = false
+    @Published private(set) var auditExportInFlight = false
+
+    private(set) var ingestBrowserProjection: AssetBrowserProjection = .empty
+    private(set) var reviewBrowserProjection: AssetBrowserProjection = .empty
+    private(set) var ingestAllAssetIDs: Set<UUID> = []
+    private(set) var ingestIncludedAssetIDs: Set<UUID> = []
+    private(set) var reviewAllAssetIDs: Set<UUID> = []
+    private(set) var ingestAssetTotalBytes: Int64 = 0
+    private(set) var reviewAssetTotalBytes: Int64 = 0
+    private(set) var ingestCollectionMetadataRevision: UInt64 = 0
+    private(set) var reviewCollectionMetadataRevision: UInt64 = 0
+    private(set) var sceneNamesByID: [UUID: String] = [:]
+    private(set) var sceneAssignmentCountsBySceneID: [UUID: Int] = [:]
+    private(set) var assignedIncludedAssetCount = 0
+    private(set) var explicitExclusionAssetsProjection: [AppAsset] = []
+    private(set) var explicitExclusionTotalBytesProjection: Int64 = 0
+    private(set) var pendingExclusionAssetsProjection: [AppAsset] = []
+    private(set) var pendingExclusionTotalBytesProjection: Int64 = 0
+    private(set) var reviewMetadataErrorIDsProjection: Set<UUID> = []
+    private(set) var reviewMetadataErrorsProjection: [UUID: String] = [:]
 
     private var scanTask: Task<Void, Never>?
+    /// Tracks every scanner that has not actually unwound yet. `scanTask` is only the cancellation
+    /// handle for the newest scanner and can be replaced or cleared before an older Task exits.
+    @Published private var activeIngestScanTaskIDs: Set<UUID> = []
+    @Published private var cancellingIngestScanGeneration: UUID?
+    var reviewScanTask: Task<Void, Never>?
+    var reviewMetadataTask: Task<Void, Never>?
+    var reviewScanGeneration = UUID()
+    var reviewMetadataAttempt = UUID()
+    var reviewMetadataWriteAttempt = UUID()
+    var reviewSourceVolumeID = SourceVolumeID()
+    var reviewSourceRootPath: String?
+    var reviewSourceRootDevice: UInt64?
+    var reviewSourceRootInode: UInt64?
+    var reviewSourceVolumeUUID: String?
     private var scanGeneration = UUID()
     private var captureDateEnrichmentTask: Task<ScanResult?, Never>?
     private var captureDateEnrichmentAttempt = UUID()
     private var captureDateEnrichmentTaskGeneration: UUID?
     private var captureDateEnrichmentTaskTimeZoneIdentifier: String?
+    private var mediaCacheSummaryGeneration = UUID()
     private var captureDateEnrichmentGeneration: UUID?
     private var captureDateEnrichmentTimeZoneIdentifier: String?
     private var projectOperationGeneration = UUID()
@@ -143,6 +289,10 @@ final class AppModel: ObservableObject {
     private var activeSourceScanScope: AppSourceScanScope?
     private var activeSourceVolumeID: SourceVolumeID?
     private var activeSourceRootPath: String?
+    /// Strong identity used only to correlate Disk Arbitration disappearance events while a
+    /// physical-card scan is not yet allowed to publish `activeSourceIdentity`.
+    private var inFlightStrongScanIdentity: VolumeIdentity?
+    private var inFlightStrongScanGeneration: UUID?
     private var operationCompletedItemIDs: Set<IngestItemID> = []
     private var preparedRenamePlan: RenamePlan?
     private var preparedRenameIntent: RenameUIIntent?
@@ -150,7 +300,9 @@ final class AppModel: ObservableObject {
     private var latestVerifiedIntentGeneration: UUID?
     private var explicitExclusionEvidenceByAssetID: [UUID: ExplicitExclusionEvidence] = [:]
     private var emptyDirectoryExclusionEvidenceByPath: [String: ExplicitDirectoryExclusionEvidence] = [:]
-    private var pendingExclusionAssetIDs: Set<UUID> = []
+    private var pendingExclusionAssetIDs: Set<UUID> = [] {
+        didSet { rebuildIngestExclusionProjections() }
+    }
     private var appliedSceneCatalogVersion: CatalogVersionRef?
     private var projectID = ProjectID()
     private var projectPhotographers: [Photographer] = []
@@ -169,6 +321,8 @@ final class AppModel: ObservableObject {
     private var mediaReadIsolationGeneration: UUID?
     private var mediaReadIsolationTask: Task<Bool, Never>?
     private var applicationInstanceLock: ApplicationInstanceLock?
+    private var lanOperationObservation: AnyCancellable?
+    private var lanStatusObservation: AnyCancellable?
 
     init() {
         mediaPipeline = nil
@@ -178,8 +332,19 @@ final class AppModel: ObservableObject {
             initialScenes.append(AppScene(id: UUID(), day: day, number: 1, name: "シーン1"))
         }
         scenes = initialScenes
+        sceneNamesByID = Dictionary(uniqueKeysWithValues: initialScenes.map { ($0.id, $0.name) })
         selectedSceneID = other.id
         lanSceneCatalog = try? LANSceneCatalogCoordinator()
+        if let lanSceneCatalog {
+            lanOperationInProgress = lanSceneCatalog.operationInProgress
+            lanStatusMessage = lanSceneCatalog.statusMessage
+            lanOperationObservation = lanSceneCatalog.$operationInProgress
+                .removeDuplicates()
+                .sink { [weak self] in self?.lanOperationInProgress = $0 }
+            lanStatusObservation = lanSceneCatalog.$statusMessage
+                .removeDuplicates()
+                .sink { [weak self] in self?.lanStatusMessage = $0 }
+        }
         projectSettings = ProjectSettings(
             categories: Self.defaultProjectCategories(),
             renameRule: Self.defaultRenameRule
@@ -240,16 +405,130 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func rebuildIngestAssetProjection(sourceChanged: Bool) {
+        if sourceChanged {
+            ingestAllAssetIDs = Set(assets.map(\.id))
+            ingestIncludedAssetIDs = ingestAllAssetIDs.subtracting(explicitlyExcludedAssetIDs)
+            ingestAssetTotalBytes = assets.reduce(0) { $0 + $1.byteCount }
+            rebuildIngestExclusionProjections()
+            rebuildAssignedIncludedAssetCount()
+        }
+        let revision = ingestBrowserProjection.revision &+ 1
+        ingestBrowserProjection = AssetBrowserProjection.make(
+            assets: assets,
+            searchText: ingestAssetSearchText,
+            category: ingestAssetCategoryFilter,
+            revision: revision
+        )
+    }
+
+    /// Confirmation sheets and the card-initialization summary can be re-evaluated frequently
+    /// while the operator types. Materialize their sorted rows and byte totals only when the
+    /// underlying asset inventory or exclusion IDs actually change.
+    private func rebuildIngestExclusionProjections() {
+        var explicitAssets: [AppAsset] = []
+        var pendingAssets: [AppAsset] = []
+        explicitAssets.reserveCapacity(explicitlyExcludedAssetIDs.count)
+        pendingAssets.reserveCapacity(pendingExclusionAssetIDs.count)
+
+        var explicitBytes: Int64 = 0
+        var pendingBytes: Int64 = 0
+        for asset in assets {
+            if explicitlyExcludedAssetIDs.contains(asset.id) {
+                explicitAssets.append(asset)
+                explicitBytes = Self.saturatingByteCountSum(explicitBytes, asset.byteCount)
+            }
+            if pendingExclusionAssetIDs.contains(asset.id) {
+                pendingAssets.append(asset)
+                pendingBytes = Self.saturatingByteCountSum(pendingBytes, asset.byteCount)
+            }
+        }
+        explicitAssets.sort {
+            $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+        }
+        pendingAssets.sort {
+            $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+        }
+        explicitExclusionAssetsProjection = explicitAssets
+        explicitExclusionTotalBytesProjection = explicitBytes
+        pendingExclusionAssetsProjection = pendingAssets
+        pendingExclusionTotalBytesProjection = pendingBytes
+    }
+
+    private func rebuildSceneAssignmentCounts() {
+        var counts: [UUID: Int] = [:]
+        counts.reserveCapacity(min(sceneAssignments.count, scenes.count))
+        for sceneID in sceneAssignments.values {
+            let current = counts[sceneID, default: 0]
+            counts[sceneID] = current == Int.max ? Int.max : current + 1
+        }
+        sceneAssignmentCountsBySceneID = counts
+        rebuildAssignedIncludedAssetCount()
+    }
+
+    private func rebuildAssignedIncludedAssetCount() {
+        assignedIncludedAssetCount = sceneAssignments.keys.reduce(into: 0) { count, assetID in
+            guard ingestIncludedAssetIDs.contains(assetID), count < Int.max else { return }
+            count += 1
+        }
+    }
+
+    nonisolated private static func saturatingByteCountSum(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        if overflow {
+            return rhs >= 0 ? Int64.max : Int64.min
+        }
+        return sum
+    }
+
+    private func rebuildReviewAssetProjection(sourceChanged: Bool) {
+        if sourceChanged {
+            reviewAllAssetIDs = Set(reviewAssets.map(\.id))
+            reviewAssetTotalBytes = reviewAssets.reduce(0) { $0 + $1.byteCount }
+        }
+        let revision = reviewBrowserProjection.revision &+ 1
+        reviewBrowserProjection = AssetBrowserProjection.make(
+            assets: reviewAssets,
+            searchText: reviewAssetSearchText,
+            category: reviewAssetCategoryFilter,
+            revision: revision
+        )
+    }
+
+    private func bumpIngestCollectionMetadataRevision() {
+        ingestCollectionMetadataRevision &+= 1
+    }
+
+    private func bumpReviewCollectionMetadataRevision() {
+        reviewCollectionMetadataRevision &+= 1
+    }
+
+    private func rebuildReviewMetadataErrorProjection() {
+        reviewMetadataErrorIDsProjection = Set(reviewRatingErrors.keys).union(reviewLabelErrors.keys)
+        var combined: [UUID: String] = [:]
+        combined.reserveCapacity(reviewMetadataErrorIDsProjection.count)
+        for assetID in reviewMetadataErrorIDsProjection {
+            var messages: [String] = []
+            if let ratingError = reviewRatingErrors[assetID] {
+                messages.append("Adobe XMP: \(ratingError)")
+            }
+            if let labelError = reviewLabelErrors[assetID] {
+                messages.append("Finderカラー: \(labelError)")
+            }
+            combined[assetID] = messages.joined(separator: "\n")
+        }
+        reviewMetadataErrorsProjection = combined
+    }
+
     var includedAssetIDs: Set<UUID> {
-        Set(assets.map(\.id)).subtracting(explicitlyExcludedAssetIDs)
+        ingestIncludedAssetIDs
     }
     var includedAssetCount: Int { includedAssetIDs.count }
     var explicitExclusionAssets: [AppAsset] {
-        assets.filter { explicitlyExcludedAssetIDs.contains($0.id) }
-            .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        explicitExclusionAssetsProjection
     }
     var explicitExclusionTotalBytes: Int64 {
-        explicitExclusionAssets.reduce(0) { $0 + $1.byteCount }
+        explicitExclusionTotalBytesProjection
     }
     var unreviewedEmptyDirectoryCount: Int {
         emptyDirectoryReviewPaths.filter { emptyDirectoryExclusionEvidenceByPath[$0] == nil }.count
@@ -262,18 +541,186 @@ final class AppModel: ObservableObject {
             && operationStore != nil
             && !destructiveOutcomeQuarantined
             && !phase.isBusy
+            && activeIngestScanTaskIDs.isEmpty
             && !renameIsBusy
             && !projectOperationInFlight
-            && lanSceneCatalog?.operationInProgress != true
+            && !reviewIsScanning
+            && !reviewMetadataIsLoading
+            && !reviewMetadataIsWriting
+            && !mediaCacheOperationInFlight
+            && !auditExportInFlight
+            && !mediaAccessQuiescenceLatched
+            && !lanOperationInProgress
             && operationTask == nil
+            && reviewScanTask == nil
+            && reviewMetadataTask == nil
+            && deferredCardScanGeneration == nil
+    }
+    /// Source selection is normally governed by the shared exclusive-operation gate. The sole
+    /// exception is a fresh ingest scan that can resolve an unexpected-removal isolation. No
+    /// other operation may use this narrower recovery admission.
+    var canStartIngestSourceScan: Bool {
+        Self.ingestSourceScanAdmissionAllowed(
+            canStartExclusiveOperation: canStartExclusiveOperation,
+            applicationReady: applicationInstanceLock != nil && operationStore != nil,
+            phase: phase,
+            ingestScanAdmissionMustWait: ingestScanAdmissionMustWait,
+            hasIngestScanTask: !activeIngestScanTaskIDs.isEmpty,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            hasMediaReadIsolationGeneration: mediaReadIsolationGeneration != nil,
+            hasMediaReadIsolationTask: mediaReadIsolationTask != nil,
+            mediaReadIsolationFailed: mediaReadIsolationFailed,
+            destructiveOutcomeQuarantined: destructiveOutcomeQuarantined,
+            hasDeferredCardScan: deferredCardScanGeneration != nil
+        )
+    }
+    var ingestScanBoundaryIsBusy: Bool {
+        !activeIngestScanTaskIDs.isEmpty
+    }
+    var ingestScanBoundaryIsRetiring: Bool {
+        !mediaReadIsolationFailed && Self.ingestScanBoundaryRetirementIsVisible(
+            hasActiveIngestScanTask: !activeIngestScanTaskIDs.isEmpty,
+            phase: phase
+        )
+    }
+
+    nonisolated static func ingestScanBoundaryRetirementIsVisible(
+        hasActiveIngestScanTask: Bool,
+        phase: WorkspacePhase
+    ) -> Bool {
+        hasActiveIngestScanTask && !phase.isBusy
     }
     var canPresentMediaPreview: Bool {
-        !mediaAccessQuiescenceLatched
+        !mediaCacheOperationInFlight
+            && !mediaAccessQuiescenceLatched
             && !destructiveOutcomeQuarantined
             && !phase.isBusy
             && !renameIsBusy
+            && !reviewMetadataIsWriting
             && operationTask == nil
     }
+    var canClearMediaCaches: Bool {
+        Self.mediaCacheClearAdmissionAllowed(
+            canStartExclusiveOperation: canStartExclusiveOperation,
+            captureDateMetadataIsLoading: captureDateMetadataIsLoading,
+            hasCaptureDateEnrichmentTask: captureDateEnrichmentTask != nil,
+            hasMediaReadIsolationGeneration: mediaReadIsolationGeneration != nil,
+            hasMediaReadIsolationTask: mediaReadIsolationTask != nil,
+            hasMediaPipeline: mediaPipeline != nil
+        )
+    }
+
+    nonisolated static func mediaCacheClearAdmissionAllowed(
+        canStartExclusiveOperation: Bool,
+        captureDateMetadataIsLoading: Bool,
+        hasCaptureDateEnrichmentTask: Bool,
+        hasMediaReadIsolationGeneration: Bool,
+        hasMediaReadIsolationTask: Bool,
+        hasMediaPipeline: Bool
+    ) -> Bool {
+        canStartExclusiveOperation
+            && !captureDateMetadataIsLoading
+            && !hasCaptureDateEnrichmentTask
+            && !hasMediaReadIsolationGeneration
+            && !hasMediaReadIsolationTask
+            && hasMediaPipeline
+    }
+
+    /// One admission policy is shared by manual scans and asynchronous card re-appearance. A
+    /// monitor callback must never clear the current ingest UI before discovering that another
+    /// workspace already owns the filesystem/media boundary.
+    private var ingestScanAdmissionMustWait: Bool {
+        Self.ingestScanAdmissionMustWait(
+            phase: phase,
+            renameIsBusy: renameIsBusy,
+            projectOperationInFlight: projectOperationInFlight,
+            hasOperationTask: operationTask != nil,
+            reviewIsScanning: reviewIsScanning,
+            reviewMetadataIsLoading: reviewMetadataIsLoading,
+            reviewMetadataIsWriting: reviewMetadataIsWriting,
+            hasReviewScanTask: reviewScanTask != nil,
+            hasReviewMetadataTask: reviewMetadataTask != nil,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            hasMediaReadIsolationGeneration: mediaReadIsolationGeneration != nil,
+            hasMediaReadIsolationTask: mediaReadIsolationTask != nil,
+            mediaReadIsolationFailed: mediaReadIsolationFailed,
+            lanOperationInProgress: lanOperationInProgress,
+            auditExportInFlight: auditExportInFlight,
+            mediaCacheOperationInFlight: mediaCacheOperationInFlight,
+            destructiveOutcomeQuarantined: destructiveOutcomeQuarantined
+        )
+    }
+
+    nonisolated static func ingestScanAdmissionMustWait(
+        phase: WorkspacePhase,
+        renameIsBusy: Bool = false,
+        projectOperationInFlight: Bool = false,
+        hasOperationTask: Bool = false,
+        reviewIsScanning: Bool = false,
+        reviewMetadataIsLoading: Bool = false,
+        reviewMetadataIsWriting: Bool = false,
+        hasReviewScanTask: Bool = false,
+        hasReviewMetadataTask: Bool = false,
+        mediaAccessQuiescenceLatched: Bool = false,
+        hasMediaReadIsolationGeneration: Bool = false,
+        hasMediaReadIsolationTask: Bool = false,
+        mediaReadIsolationFailed: Bool = false,
+        lanOperationInProgress: Bool = false,
+        auditExportInFlight: Bool = false,
+        mediaCacheOperationInFlight: Bool = false,
+        destructiveOutcomeQuarantined: Bool = false
+    ) -> Bool {
+        renameIsBusy
+            || projectOperationInFlight
+            || hasOperationTask
+            || reviewIsScanning
+            || reviewMetadataIsLoading
+            || reviewMetadataIsWriting
+            || hasReviewScanTask
+            || hasReviewMetadataTask
+            || (mediaAccessQuiescenceLatched
+                && !(hasMediaReadIsolationGeneration && hasMediaReadIsolationTask))
+            || mediaReadIsolationFailed
+            || lanOperationInProgress
+            || auditExportInFlight
+            || mediaCacheOperationInFlight
+            || destructiveOutcomeQuarantined
+            || (phase.isBusy && phase != .scanning)
+    }
+
+    nonisolated static func ingestSourceScanAdmissionAllowed(
+        canStartExclusiveOperation: Bool,
+        applicationReady: Bool,
+        phase: WorkspacePhase,
+        ingestScanAdmissionMustWait: Bool,
+        hasIngestScanTask: Bool,
+        mediaAccessQuiescenceLatched: Bool,
+        hasMediaReadIsolationGeneration: Bool,
+        hasMediaReadIsolationTask: Bool,
+        mediaReadIsolationFailed: Bool,
+        destructiveOutcomeQuarantined: Bool,
+        hasDeferredCardScan: Bool
+    ) -> Bool {
+        guard applicationReady,
+              !phase.isBusy,
+              !ingestScanAdmissionMustWait,
+              !hasIngestScanTask,
+              !mediaReadIsolationFailed,
+              !destructiveOutcomeQuarantined,
+              !hasDeferredCardScan
+        else { return false }
+
+        let hasAnyIsolationState = mediaAccessQuiescenceLatched
+            || hasMediaReadIsolationGeneration
+            || hasMediaReadIsolationTask
+        if hasAnyIsolationState {
+            return mediaAccessQuiescenceLatched
+                && hasMediaReadIsolationGeneration
+                && hasMediaReadIsolationTask
+        }
+        return canStartExclusiveOperation
+    }
+
     var canExecutePreparedRename: Bool {
         guard canStartExclusiveOperation,
               preparedRenamePlan != nil,
@@ -286,15 +733,34 @@ final class AppModel: ObservableObject {
     var canRecoverLastDeletedProject: Bool {
         lastDeletedProjectID != nil && canStartExclusiveOperation
     }
+    var canDeleteCurrentStoredProject: Bool {
+        Self.projectDeletionAdmissionAllowed(
+            canStartExclusiveOperation: canStartExclusiveOperation,
+            hasSelectedProject: selectedStoredProjectID != nil,
+            hasProjectStore: projectStore != nil
+        )
+    }
+    nonisolated static func projectDeletionAdmissionAllowed(
+        canStartExclusiveOperation: Bool,
+        hasSelectedProject: Bool,
+        hasProjectStore: Bool
+    ) -> Bool {
+        canStartExclusiveOperation && hasSelectedProject && hasProjectStore
+    }
     var pendingExclusionAssets: [AppAsset] {
-        assets.filter { pendingExclusionAssetIDs.contains($0.id) }
-            .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        pendingExclusionAssetsProjection
+    }
+    var pendingExclusionTotalBytes: Int64 {
+        pendingExclusionTotalBytesProjection
     }
     var assignedCount: Int {
-        sceneAssignments.keys.filter(includedAssetIDs.contains).count
+        assignedIncludedAssetCount
+    }
+    func assignmentCount(for sceneID: UUID) -> Int {
+        sceneAssignmentCountsBySceneID[sceneID, default: 0]
     }
     var unassignedCount: Int { max(includedAssetCount - assignedCount, 0) }
-    var totalBytes: Int64 { assets.reduce(0) { $0 + $1.byteCount } }
+    var totalBytes: Int64 { ingestAssetTotalBytes }
     var canPrepareCardInitialization: Bool {
         guard let scan = coreScanResult,
               let receipt = latestVerifiedReceipt,
@@ -370,7 +836,10 @@ final class AppModel: ObservableObject {
         return "安全な取り出しは通常起動では無効です。認定済み実機試験でのみ開発用flagを使用します。"
     }
     var canCancelCurrentOperation: Bool {
-        phase != .erasingCard && phase != .ejectingCard && (phase.isBusy || renameIsBusy)
+        if phase == .scanning, cancellingIngestScanGeneration != nil { return false }
+        return phase != .erasingCard
+            && phase != .ejectingCard
+            && (phase.isBusy || renameIsBusy)
     }
     var configuredCategories: [ProjectCategory] {
         projectSettings.categories.sorted {
@@ -378,14 +847,33 @@ final class AppModel: ObservableObject {
             return $0.id.rawValue.uuidString < $1.id.rawValue.uuidString
         }
     }
+    var currentMediaScanPolicy: MediaScanPolicy {
+        MediaScanPolicy(projectSettings: projectSettings)
+    }
+    var visibleIngestAssetIDs: Set<UUID> {
+        ingestBrowserProjection.visibleAssetIDs
+    }
+    var visibleSelectedIngestAssetIDs: Set<UUID> {
+        Self.visibleSelection(selectedAssetIDs, within: visibleIngestAssetIDs)
+    }
+    nonisolated static func visibleSelection(
+        _ selectedIDs: Set<UUID>,
+        within visibleIDs: Set<UUID>
+    ) -> Set<UUID> {
+        selectedIDs.intersection(visibleIDs)
+    }
     var includesHiddenFiles: Bool { projectSettings.includeHiddenFiles }
     var excludedFolderNamesText: String {
         excludedFolderNamesDraft
     }
 
     func chooseSource() {
-        guard canStartExclusiveOperation else { return }
+        guard canStartIngestSourceScan else { return }
         guard let url = chooseDirectory(prompt: "撮影カードまたは素材フォルダを選択") else { return }
+        guard canStartIngestSourceScan else {
+            statusMessage = "別の処理が開始されたため、ソース選択を適用しませんでした"
+            return
+        }
         sourceURL = url
         scan(url: url)
     }
@@ -393,7 +881,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func acceptDroppedURLs(_ urls: [URL]) -> Bool {
         let fileURLs = urls.filter(\.isFileURL)
-        guard !fileURLs.isEmpty, canStartExclusiveOperation else { return false }
+        guard !fileURLs.isEmpty, canStartIngestSourceScan else { return false }
         if fileURLs.count == 1,
            (try? fileURLs[0].resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
             sourceURL = fileURLs[0]
@@ -406,12 +894,22 @@ final class AppModel: ObservableObject {
 
     func chooseDestination() {
         guard canStartExclusiveOperation else { return }
-        destinationURL = chooseDirectory(prompt: "保存先フォルダを選択")
+        guard let selectedURL = chooseDirectory(prompt: "保存先フォルダを選択") else { return }
+        guard canStartExclusiveOperation else {
+            statusMessage = "別の処理が開始されたため、保存先選択を適用しませんでした"
+            return
+        }
+        destinationURL = selectedURL
     }
 
     func createNewProject() {
         guard canStartExclusiveOperation else { return }
         let rescanScope = activeSourceScanScope
+        resetToNewProjectState()
+        restartScanAfterProjectTransition(rescanScope)
+    }
+
+    private func resetToNewProjectState() {
         lanSceneCatalog?.setOff()
         lanCatalogEnabled = false
         projectOperationGeneration = UUID()
@@ -434,7 +932,6 @@ final class AppModel: ObservableObject {
         clearScanDerivedStateForProjectTransition()
         appliedSceneCatalogVersion = nil
         projectPersistenceStatus = "新規・未保存"
-        restartScanAfterProjectTransition(rescanScope)
     }
 
     func saveCurrentProject() {
@@ -511,10 +1008,7 @@ final class AppModel: ObservableObject {
     }
 
     func deleteCurrentStoredProject() {
-        guard !phase.isBusy,
-              !renameIsBusy,
-              !projectOperationInFlight,
-              operationTask == nil,
+        guard canDeleteCurrentStoredProject,
               let id = selectedStoredProjectID,
               let projectStore
         else { return }
@@ -524,13 +1018,21 @@ final class AppModel: ObservableObject {
         projectPersistenceStatus = "削除中…"
         Task { [weak self] in
             guard let self else { return }
-            defer { projectOperationInFlight = false }
+            var rescanScope: AppSourceScanScope?
+            var transitionApplied = false
+            defer {
+                projectOperationInFlight = false
+                if transitionApplied {
+                    restartScanAfterProjectTransition(rescanScope)
+                }
+            }
             do {
                 _ = try await projectStore.delete(id: ProjectID(rawValue: id))
-                guard projectOperationGeneration == generation, !phase.isBusy else { return }
+                guard projectOperationGeneration == generation else { return }
                 lastDeletedProjectID = id
-                projectOperationInFlight = false
-                createNewProject()
+                rescanScope = activeSourceScanScope
+                resetToNewProjectState()
+                transitionApplied = true
                 projectPersistenceStatus = "削除済み（アプリ内Trashから復旧可能）"
                 statusMessage = "プロジェクトを復旧可能なTrashへ移動しました"
                 refreshStoredProjects()
@@ -591,6 +1093,10 @@ final class AppModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let mainURL = panel.url else { return }
+        guard canStartExclusiveOperation else {
+            statusMessage = "別の処理が開始されたため、旧プロジェクト移行を開始しませんでした"
+            return
+        }
 
         let adjacentCandidates = [
             mainURL.appendingPathExtension("bak"),
@@ -646,7 +1152,12 @@ final class AppModel: ObservableObject {
 
     func chooseRenameSource() {
         guard canStartExclusiveOperation else { return }
-        renameSourceURL = chooseDirectory(prompt: "リネームする既存フォルダを選択")
+        guard let selectedURL = chooseDirectory(prompt: "リネームする既存フォルダを選択") else { return }
+        guard canStartExclusiveOperation else {
+            renameStatusMessage = "別の処理が開始されたため、入力フォルダ選択を適用しませんでした"
+            return
+        }
+        renameSourceURL = selectedURL
         preparedRenamePlan = nil
         preparedRenameIntent = nil
         renamePreviewRows = []
@@ -654,7 +1165,12 @@ final class AppModel: ObservableObject {
 
     func chooseRenameDestination() {
         guard canStartExclusiveOperation else { return }
-        renameDestinationURL = chooseDirectory(prompt: "リネーム済みコピーの保存先を選択")
+        guard let selectedURL = chooseDirectory(prompt: "リネーム済みコピーの保存先を選択") else { return }
+        guard canStartExclusiveOperation else {
+            renameStatusMessage = "別の処理が開始されたため、出力フォルダ選択を適用しませんでした"
+            return
+        }
+        renameDestinationURL = selectedURL
         preparedRenamePlan = nil
         preparedRenameIntent = nil
         renamePreviewRows = []
@@ -852,152 +1368,34 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func copySelectionToSelectFolders() {
-        guard canStartExclusiveOperation else { return }
-        guard let scanResult = coreScanResult,
-              let sourceRoot = sourceURL,
-              let store = operationStore,
-              let planningScanScope = activeSourceScanScope,
-              !selectedAssetIDs.isEmpty
-        else {
-            phase = .failed("アーカイブをフォルダ単位でスキャンし、素材を選択してください")
-            return
-        }
-        let selected = selectedAssetIDs
-        let planningScanGeneration = scanGeneration
-        let planningScanPolicy = MediaScanPolicy(projectSettings: projectSettings)
-        let planningStrongIdentity = activeSourceIdentity.flatMap { identity in
-            identity.identityStrength == .strongForCurrentInsertion ? identity : nil
-        }
-        let captureDateTimeZone = Self.renameTimeZone(for: projectSettings.renameRule)
-        let selectionDestinationProvider = destinationIdentityProvider
-        let destinationRevalidator = destinationIdentityProvider.makeRevalidationHandler()
-        let cancellation = OperationCancellation()
-        operationCancellation = cancellation
-        let startedAt = Date()
-        phase = .planning
-        statusMessage = "選別コピーの出力先と衝突を検査しています"
-        operationTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let captureDateFrozenScan = try await captureDateFrozenScanForPlanning(
-                    from: scanResult,
-                    generation: planningScanGeneration,
-                    assumedTimeZone: captureDateTimeZone
-                )
-                statusMessage = "選別計画の確定直前に元の走査範囲を全件再検査しています"
-                let frozenScan = try await freshInventoryFrozenScanForPlanning(
-                    baseline: captureDateFrozenScan,
-                    scope: planningScanScope,
-                    generation: planningScanGeneration,
-                    policy: planningScanPolicy,
-                    strongSourceIdentity: planningStrongIdentity,
-                    durableStore: store
-                )
-                let destination = try await selectionDestinationProvider.resolve(rootURL: sourceRoot)
-                let sourceIdentity = activeSourceIdentity ?? Self.weakSourceIdentity(for: frozenScan)
-                let selectedCoreIDs = try Self.expandedValidatedCompanionSelection(
-                    selectedIDs: Set(selected.map(MediaAssetID.init(rawValue:))),
-                    assets: frozenScan.assets
-                )
-                let requiredSet = frozenScan.makeRequiredSet(
-                    selectedAssetIDs: selectedCoreIDs,
-                    destinationID: destination.id
-                )
-                let selectedAssets = frozenScan.assets.filter { selectedCoreIDs.contains($0.id) }
-                guard selectedAssets.count == selectedCoreIDs.count else {
-                    throw UMISCoreError.invalidPlan(
-                        "選択項目または付随ファイルの安定IDが現在のスキャン結果と一致しません"
-                    )
-                }
-                let items = try selectedAssets.map { asset -> IngestPlanItem in
-                    let parent = asset.canonicalURL.deletingLastPathComponent()
-                    guard parent.lastPathComponent != "選別" else {
-                        throw UMISCoreError.invalidPlan("すでに選別フォルダ内の素材が含まれています")
-                    }
-                    let finalURL = parent
-                        .appendingPathComponent("選別", isDirectory: true)
-                        .appendingPathComponent(asset.originalName, isDirectory: false)
-                    try PathSafety.requireDescendant(finalURL, of: sourceRoot)
-                    return IngestPlanItem(
-                        asset: asset,
-                        sourceURL: asset.canonicalURL,
-                        finalURL: finalURL,
-                        expectedSourceFingerprint: asset.fingerprint,
-                        duplicatePolicy: .verifyIdentical
-                    )
-                }
-                let plan = IngestPlan(
-                    project: Project(id: projectID, name: projectName.nilIfBlank ?? "Select"),
-                    sourceVolume: sourceIdentity,
-                    destination: destination,
-                    requiredSet: requiredSet,
-                    scanPolicy: planningScanPolicy,
-                    items: items
-                )
-                try plan.validate()
-                phase = .copying(completed: 0, total: items.count)
-                let receipt = try await volumeActivity.withActivity(
-                    sourceVolumeID: plan.sourceVolume.id
-                ) {
-                    try await IngestEngine(
-                        store: store,
-                        destinationRevalidator: destinationRevalidator
-                    ).execute(
-                        plan: plan,
-                        operationKind: .copyAndRename,
-                        cancellation: cancellation
-                    )
-                }
-                try Task.checkCancellation()
-                phase = .completed
-                statusMessage = "選択素材と付随ファイル\(receipt.deliveries.count)件を選別フォルダへ検証付きコピーしました"
-                activity.insert(
-                    ActivityRecord(
-                        id: receipt.runID.rawValue,
-                        startedAt: startedAt,
-                        title: "選別コピー",
-                        detail: sourceRoot.path,
-                        state: .verified,
-                        itemCount: receipt.deliveries.count,
-                        totalBytes: receipt.deliveries.reduce(0) { $0 + $1.byteSize }
-                    ),
-                    at: 0
-                )
-            } catch is CancellationError {
-                recordOperationCancellation(startedAt: startedAt)
-            } catch let error as UMISCoreError where error == .cancelled {
-                recordOperationCancellation(startedAt: startedAt)
-            } catch {
-                phase = .failed(userFacingMessage(for: error))
-                statusMessage = "選別コピーは完了していません"
-            }
-            operationCancellation = nil
-            refreshOperationHistory()
-            operationTask = nil
-        }
-    }
-
     func rescan() {
-        guard canStartExclusiveOperation, let sourceURL else { return }
+        guard canStartIngestSourceScan, let sourceURL else { return }
         scan(url: sourceURL)
     }
 
     func cancelCurrentOperation() {
         guard canCancelCurrentOperation else { return }
+        let cancelledIngestScan = phase == .scanning && scanTask != nil
+        if cancelledIngestScan {
+            cancellingIngestScanGeneration = scanGeneration
+        }
         scanTask?.cancel()
         operationTask?.cancel()
         if let operationCancellation {
             Task { await operationCancellation.cancel() }
         }
-        if operationTask == nil {
+        if operationTask == nil, !cancelledIngestScan {
             phase = assets.isEmpty ? .idle : .ready
         }
-        statusMessage = "中止を要求しました。現在のファイル境界で安全に停止します"
+        if cancelledIngestScan {
+            statusMessage = "スキャンの中止を要求しました。ファイルと媒体の読取境界が閉じるまで待っています"
+        } else {
+            statusMessage = "中止を要求しました。現在のファイル境界で安全に停止します"
+        }
     }
 
     func selectAll() {
-        selectedAssetIDs = Set(assets.map(\.id))
+        selectedAssetIDs = visibleIngestAssetIDs
     }
 
     func clearSelection() {
@@ -1007,7 +1405,7 @@ final class AppModel: ObservableObject {
     func toggleSelection(_ assetID: UUID) {
         if selectedAssetIDs.contains(assetID) {
             selectedAssetIDs.remove(assetID)
-        } else {
+        } else if visibleIngestAssetIDs.contains(assetID) {
             selectedAssetIDs.insert(assetID)
         }
     }
@@ -1018,27 +1416,68 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func previewPlaybackDidStart(assetID: UUID) -> Bool {
-        guard canPresentMediaPreview else { return false }
-        activePreviewPlaybackIDs.insert(assetID)
-        return true
+    func previewPlaybackDidStart(assetID: UUID) -> UUID? {
+        guard canPresentMediaPreview else { return nil }
+        let token = UUID()
+        activePreviewPlaybackIDs.insert(token)
+        _ = assetID
+        return token
     }
 
-    func previewPlaybackDidStop(assetID: UUID) {
-        activePreviewPlaybackIDs.remove(assetID)
+    /// A preview calls this only after it has synchronously paused and detached its player item,
+    /// cancelled asset loading, and released every strong AVFoundation reference it owns. Keeping
+    /// those objects as arguments here would itself retain them past the quiescence acknowledgement.
+    func previewPlaybackObjectsDidRelease(token: UUID?) async {
+        // Let detach/cancellation work already enqueued by AVFoundation drain before the token can
+        // satisfy the mutation/eject quiescence boundary. Object lifetime is not inferred from this
+        // delay: the caller has already released its strong references before entering this method.
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(100))
+        if let token {
+            activePreviewPlaybackIDs.remove(token)
+        }
+    }
+
+    /// Establishes the same media-read boundary used before eject/erase. Review metadata writes can
+    /// rewrite an entire JPEG, TIFF, PSD, or movie, so no thumbnail decoder or preview player may
+    /// retain a read against the old inode while Adobe commits the safe update.
+    func beginReviewMediaMutationQuiescence() {
+        mediaAccessQuiescenceLatched = true
+        previewAsset = nil
+    }
+
+    func suspendMediaReadsForReviewMutation() async throws {
+        try await waitForPreviewPlaybackQuiescence()
+        await mediaPipeline?.suspendAndAwaitQuiescence()
+        try await waitForPreviewPlaybackQuiescence()
+        try Task.checkCancellation()
+    }
+
+    /// A card-removal isolation may begin while an archive write is in flight. In that case the
+    /// pipeline must remain suspended; this method never clears a newer isolation boundary.
+    func finishReviewMediaMutationQuiescence() async {
+        guard mediaReadIsolationGeneration == nil,
+              !destructiveOutcomeQuarantined else { return }
+        await mediaPipeline?.resumeRequests()
+        if mediaReadIsolationGeneration == nil, !destructiveOutcomeQuarantined {
+            mediaAccessQuiescenceLatched = false
+            // Quiescence cancels visible and prefetched decode work. Reconfigure review cells so
+            // any thumbnail that had not reached the cache is requested again after the write.
+            reviewThumbnailReloadGeneration = UUID()
+        } else {
+            await mediaPipeline?.suspendAndAwaitQuiescence()
+        }
     }
 
     func assignSelectionToCurrentScene() {
         guard canStartExclusiveOperation else { return }
         guard let selectedSceneID, let scan = coreScanResult else { return }
         let groupedSelection = Self.expandedCompanionAssetIDs(
-            selectedAssetIDs,
+            visibleSelectedIngestAssetIDs,
             assets: scan.assets
         )
         let assignable = groupedSelection.intersection(includedAssetIDs)
-        for id in assignable {
-            sceneAssignments[id] = selectedSceneID
-        }
+        applySceneAssignmentBatch(assignable, sceneID: selectedSceneID)
         selectedAssetIDs.removeAll()
         invalidateVerifiedIngestIntent()
         statusMessage = "\(assignedCount)件をシーンへ割り当て済み"
@@ -1047,13 +1486,36 @@ final class AppModel: ObservableObject {
     func removeAssignmentsForSelection() {
         guard canStartExclusiveOperation, let scan = coreScanResult else { return }
         let groupedSelection = Self.expandedCompanionAssetIDs(
-            selectedAssetIDs,
+            visibleSelectedIngestAssetIDs,
             assets: scan.assets
         )
-        for id in groupedSelection {
-            sceneAssignments.removeValue(forKey: id)
-        }
+        applySceneAssignmentBatch(groupedSelection, sceneID: nil)
         invalidateVerifiedIngestIntent()
+    }
+
+    /// Applies an arbitrarily large selection through one `@Published` dictionary assignment.
+    /// Keeping the mutations on a local copy avoids one publication and metadata revision per ID.
+    func applySceneAssignmentBatch(_ assetIDs: Set<UUID>, sceneID: UUID?) {
+        guard !assetIDs.isEmpty else { return }
+        var updatedAssignments = sceneAssignments
+        var changed = false
+        if let sceneID {
+            let (requestedCapacity, capacityOverflow) = updatedAssignments.count
+                .addingReportingOverflow(assetIDs.count)
+            if !capacityOverflow {
+                updatedAssignments.reserveCapacity(requestedCapacity)
+            }
+            for assetID in assetIDs where updatedAssignments[assetID] != sceneID {
+                updatedAssignments[assetID] = sceneID
+                changed = true
+            }
+        } else {
+            for assetID in assetIDs where updatedAssignments.removeValue(forKey: assetID) != nil {
+                changed = true
+            }
+        }
+        guard changed else { return }
+        sceneAssignments = updatedAssignments
     }
 
     func excludeSelectionFromIngest() {
@@ -1061,7 +1523,7 @@ final class AppModel: ObservableObject {
         // Exclusion is intentionally asset-specific and audited. This lets an operator resolve an
         // ambiguous same-stem multi-primary group by excluding only the confirmed extra primary.
         // Any unsafe remainder (for example sidecars without a primary) still fails plan validation.
-        let valid = selectedAssetIDs.intersection(Set(assets.map(\.id)))
+        let valid = visibleSelectedIngestAssetIDs
         guard !valid.isEmpty else { return }
         pendingExclusionAssetIDs = valid
         showAssetExclusionConfirmation = true
@@ -1075,18 +1537,14 @@ final class AppModel: ObservableObject {
               let scan = coreScanResult
         else { return }
         do {
-            let evidence = try pendingExclusionAssetIDs.map { id in
-                try scan.makeExplicitExclusionEvidence(
-                    assetID: MediaAssetID(rawValue: id),
-                    reason: reason,
-                    operatorIdentifier: operatorIdentifier
-                )
-            }
-            for record in evidence {
-                explicitExclusionEvidenceByAssetID[record.assetID.rawValue] = record
-                explicitlyExcludedAssetIDs.insert(record.assetID.rawValue)
-                sceneAssignments.removeValue(forKey: record.assetID.rawValue)
-            }
+            let evidence = try Self.makeExplicitExclusionEvidenceBatch(
+                assets: scan.assets,
+                assetIDs: pendingExclusionAssetIDs,
+                reason: reason,
+                operatorIdentifier: operatorIdentifier,
+                confirmedAt: Date()
+            )
+            commitExplicitAssetExclusionEvidence(evidence)
             selectedAssetIDs.removeAll()
             pendingExclusionAssetIDs.removeAll()
             showAssetExclusionConfirmation = false
@@ -1094,6 +1552,81 @@ final class AppModel: ObservableObject {
             statusMessage = "\(evidence.count)件を理由・担当者・確認時刻付きで明示除外しました"
         } catch {
             statusMessage = userFacingMessage(for: error)
+        }
+    }
+
+    /// Indexes a frozen scan once before creating evidence. Calling
+    /// `ScanResult.makeExplicitExclusionEvidence` once per selected ID would linearly search the
+    /// complete scan each time and turn a large confirmation into O(assetCount²).
+    nonisolated static func makeExplicitExclusionEvidenceBatch(
+        assets: [MediaAsset],
+        assetIDs: Set<UUID>,
+        reason: String,
+        operatorIdentifier: String,
+        confirmedAt: Date
+    ) throws -> [ExplicitExclusionEvidence] {
+        var assetsByID: [UUID: MediaAsset] = [:]
+        assetsByID.reserveCapacity(assets.count)
+        for asset in assets {
+            guard assetsByID.updateValue(asset, forKey: asset.id.rawValue) == nil else {
+                throw UMISCoreError.invalidPlan("Scan contains duplicate media asset IDs")
+            }
+        }
+
+        var evidence: [ExplicitExclusionEvidence] = []
+        evidence.reserveCapacity(assetIDs.count)
+        for assetID in assetIDs {
+            guard let asset = assetsByID[assetID] else {
+                throw UMISCoreError.invalidPlan("Cannot exclude an asset outside this scan")
+            }
+            evidence.append(try ExplicitExclusionEvidence(
+                assetID: asset.id,
+                relativePath: asset.relativePath,
+                byteSize: asset.byteSize,
+                reason: reason,
+                operatorIdentifier: operatorIdentifier,
+                operatorConfirmedAt: confirmedAt
+            ))
+        }
+        return evidence
+    }
+
+    /// Commits validated exclusion evidence with at most one publication for the exclusion set and
+    /// one for scene assignments, independent of the number of excluded assets.
+    func commitExplicitAssetExclusionEvidence(_ evidence: [ExplicitExclusionEvidence]) {
+        guard !evidence.isEmpty else { return }
+        var updatedEvidence = explicitExclusionEvidenceByAssetID
+        var updatedExcludedIDs = explicitlyExcludedAssetIDs
+        var updatedAssignments = sceneAssignments
+        let (evidenceCapacity, evidenceCapacityOverflow) = updatedEvidence.count
+            .addingReportingOverflow(evidence.count)
+        if !evidenceCapacityOverflow {
+            updatedEvidence.reserveCapacity(evidenceCapacity)
+        }
+        let (excludedCapacity, excludedCapacityOverflow) = updatedExcludedIDs.count
+            .addingReportingOverflow(evidence.count)
+        if !excludedCapacityOverflow {
+            updatedExcludedIDs.reserveCapacity(excludedCapacity)
+        }
+        var exclusionsChanged = false
+        var assignmentsChanged = false
+
+        for record in evidence {
+            let assetID = record.assetID.rawValue
+            updatedEvidence[assetID] = record
+            exclusionsChanged = updatedExcludedIDs.insert(assetID).inserted || exclusionsChanged
+            assignmentsChanged = updatedAssignments.removeValue(forKey: assetID) != nil
+                || assignmentsChanged
+        }
+
+        // Evidence must be available before an exclusion becomes observable. This maintains the
+        // audited-exclusion invariant even for synchronous Published subscribers.
+        explicitExclusionEvidenceByAssetID = updatedEvidence
+        if assignmentsChanged {
+            sceneAssignments = updatedAssignments
+        }
+        if exclusionsChanged {
+            explicitlyExcludedAssetIDs = updatedExcludedIDs
         }
     }
 
@@ -1142,7 +1675,7 @@ final class AppModel: ObservableObject {
 
     func includeSelectionInIngest() {
         guard !phase.isBusy, !renameIsBusy else { return }
-        let restored = selectedAssetIDs.intersection(explicitlyExcludedAssetIDs)
+        let restored = visibleSelectedIngestAssetIDs.intersection(explicitlyExcludedAssetIDs)
         guard !restored.isEmpty else { return }
         explicitlyExcludedAssetIDs.subtract(restored)
         for id in restored { explicitExclusionEvidenceByAssetID.removeValue(forKey: id) }
@@ -1394,8 +1927,7 @@ final class AppModel: ObservableObject {
     }
 
     func setCategoryEnabled(id: UUID, isEnabled: Bool) {
-        guard !phase.isBusy,
-              !renameIsBusy,
+        guard canStartExclusiveOperation,
               let index = projectSettings.categories.firstIndex(where: { $0.id.rawValue == id })
         else { return }
         objectWillChange.send()
@@ -1404,8 +1936,7 @@ final class AppModel: ObservableObject {
     }
 
     func setCategoryFolderName(id: UUID, folderName: String) {
-        guard !phase.isBusy,
-              !renameIsBusy,
+        guard canStartExclusiveOperation,
               let index = projectSettings.categories.firstIndex(where: { $0.id.rawValue == id })
         else { return }
         objectWillChange.send()
@@ -1414,14 +1945,14 @@ final class AppModel: ObservableObject {
     }
 
     func setIncludesHiddenFiles(_ include: Bool) {
-        guard !phase.isBusy, !renameIsBusy else { return }
+        guard canStartExclusiveOperation else { return }
         objectWillChange.send()
         projectSettings.includeHiddenFiles = include
         markProjectSettingsDirty()
     }
 
     func setExcludedFolderNames(_ text: String) {
-        guard !phase.isBusy, !renameIsBusy else { return }
+        guard canStartExclusiveOperation else { return }
         excludedFolderNamesDraft = text
         let names = text
             .split(whereSeparator: { $0 == "," || $0 == "\n" })
@@ -1484,6 +2015,7 @@ final class AppModel: ObservableObject {
             }
             await mediaPipeline?.resumeRequests()
             mediaAccessQuiescenceLatched = false
+            reviewThumbnailReloadGeneration = UUID()
             ejectObservedDisappearance = false
             operationTask = nil
         }
@@ -1637,6 +2169,8 @@ final class AppModel: ObservableObject {
     }
 
     func refreshMediaCacheSummary() {
+        let measurementGeneration = UUID()
+        mediaCacheSummaryGeneration = measurementGeneration
         guard let mediaPipeline else {
             mediaCacheSummary = "利用不可"
             return
@@ -1652,24 +2186,105 @@ final class AppModel: ObservableObject {
                 fromByteCount: statistics.diskCostBytes,
                 countStyle: .file
             )
+            guard Self.acceptsMediaCacheSummary(
+                measurementGeneration: measurementGeneration,
+                currentGeneration: mediaCacheSummaryGeneration
+            ) else { return }
             mediaCacheSummary = "メモリ \(memory) ／ ディスク \(disk)"
         }
     }
 
+    nonisolated static func acceptsMediaCacheSummary(
+        measurementGeneration: UUID,
+        currentGeneration: UUID
+    ) -> Bool {
+        measurementGeneration == currentGeneration
+    }
+
     func clearMediaCaches() {
-        guard let mediaPipeline else { return }
-        statusMessage = "メディアキャッシュを消去しています"
+        guard canClearMediaCaches, let mediaPipeline else { return }
+        let expectedMediaReadIsolationGeneration = mediaReadIsolationGeneration
+        // Reject a slower pre-clear usage measurement if it returns after the clear result.
+        mediaCacheSummaryGeneration = UUID()
+        // A cache clear cancels the in-flight preview representation. Closing the shared preview
+        // prevents that expected cancellation from being presented as a media decoding error.
+        previewAsset = nil
+        mediaCacheOperationInFlight = true
+        let startedMessage = "メディアキャッシュを消去しています（表示中のプレビューは閉じました）"
+        statusMessage = startedMessage
+        mediaCacheStatusMessage = startedMessage
         Task { [weak self] in
+            guard let self else { return }
+            defer { mediaCacheOperationInFlight = false }
+            let clearFailure: String?
             do {
-                try await mediaPipeline.clearCaches()
-                guard let self else { return }
-                statusMessage = "メディアキャッシュを消去しました"
-                refreshMediaCacheSummary()
+                try await mediaPipeline.suspendAndClearCaches()
+                clearFailure = nil
             } catch {
-                guard let self else { return }
-                statusMessage = "キャッシュ消去に失敗: \(error.localizedDescription)"
+                clearFailure = userFacingMessage(for: error)
+            }
+            let resumed = await resumeMediaReadsAfterCacheClearIfSafe(
+                expectedIsolationGeneration: expectedMediaReadIsolationGeneration,
+                pipeline: mediaPipeline
+            )
+            let resultMessage: String
+            if let clearFailure {
+                resultMessage = resumed
+                    ? "キャッシュ消去に失敗: \(clearFailure)"
+                    : "キャッシュ消去に失敗し、ソース状態も変化したためメディア読取を隔離したままにします: \(clearFailure)"
+            } else {
+                resultMessage = resumed
+                    ? "メディアキャッシュを消去しました"
+                    : "メディアキャッシュを消去しましたが、ソース状態が変化したため読取を隔離したままにします"
+            }
+            statusMessage = resultMessage
+            mediaCacheStatusMessage = resultMessage
+            refreshMediaCacheSummary()
+            if resumed {
+                // Quiescence cancels visible and prefetched work. Re-request only the viewport and
+                // near-visible items through the collection update policy after the pipeline resumes.
+                ingestThumbnailReloadGeneration = UUID()
+                reviewThumbnailReloadGeneration = UUID()
             }
         }
+    }
+
+    private func resumeMediaReadsAfterCacheClearIfSafe(
+        expectedIsolationGeneration: UUID?,
+        pipeline: MediaPipeline
+    ) async -> Bool {
+        guard Self.permitsMediaReadResumeAfterCacheClear(
+            expectedIsolationGeneration: expectedIsolationGeneration,
+            currentIsolationGeneration: mediaReadIsolationGeneration,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            destructiveOutcomeQuarantined: destructiveOutcomeQuarantined
+        ) else { return false }
+
+        await pipeline.resumeRequests()
+        guard Self.permitsMediaReadResumeAfterCacheClear(
+            expectedIsolationGeneration: expectedIsolationGeneration,
+            currentIsolationGeneration: mediaReadIsolationGeneration,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            destructiveOutcomeQuarantined: destructiveOutcomeQuarantined
+        ) else {
+            // A card removal or destructive-result quarantine raced the actor hop above. Fail
+            // closed again; the newest isolation generation exclusively owns the next resume.
+            await pipeline.suspendAndAwaitQuiescence()
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func permitsMediaReadResumeAfterCacheClear(
+        expectedIsolationGeneration: UUID?,
+        currentIsolationGeneration: UUID?,
+        mediaAccessQuiescenceLatched: Bool,
+        destructiveOutcomeQuarantined: Bool
+    ) -> Bool {
+        expectedIsolationGeneration == nil
+            && currentIsolationGeneration == nil
+            && !mediaAccessQuiescenceLatched
+            && !destructiveOutcomeQuarantined
     }
 
     func refreshOperationHistory() {
@@ -1833,17 +2448,28 @@ final class AppModel: ObservableObject {
     }
 
     func exportActivityReport() {
-        guard !activity.isEmpty || !operationHistory.isEmpty else { return }
+        guard canStartExclusiveOperation,
+              !activity.isEmpty || !operationHistory.isEmpty
+        else { return }
         let panel = NSSavePanel()
         panel.title = "操作履歴を書き出す"
         panel.nameFieldStringValue = "RinkanUMIS-audit-\(Self.filenameDateFormatter(timeZone: .current).string(from: Date())).json"
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard canStartExclusiveOperation else {
+            let message = "別の処理が開始されたため、操作履歴の書き出しを開始しませんでした"
+            statusMessage = message
+            historyStatusMessage = message
+            return
+        }
         let sessionActivity = activity
         guard let operationStore else { return }
+        auditExportInFlight = true
+        historyStatusMessage = "匿名化監査レポートを書き出しています"
         Task { [weak self] in
             guard let self else { return }
+            defer { auditExportInFlight = false }
             do {
                 let auditVerification = try await operationStore.verifyAuditChain()
                 guard auditVerification.isTrusted else {
@@ -1867,9 +2493,13 @@ final class AppModel: ObservableObject {
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
                 encoder.dateEncodingStrategy = .iso8601
                 try encoder.encode(report).write(to: url, options: [.atomic])
-                statusMessage = "hash chain付き操作履歴を、payload・パス・生のエラー詳細を匿名化して書き出しました"
+                let message = "hash chain付き操作履歴を、payload・パス・生のエラー詳細を匿名化して書き出しました"
+                statusMessage = message
+                historyStatusMessage = message
             } catch {
-                statusMessage = "操作履歴の書き出しに失敗: \(userFacingMessage(for: error))"
+                let message = "操作履歴の書き出しに失敗: \(userFacingMessage(for: error))"
+                statusMessage = message
+                historyStatusMessage = message
             }
         }
     }
@@ -1948,6 +2578,7 @@ final class AppModel: ObservableObject {
             if mediaReadIsolationGeneration == verificationMediaIsolationGeneration {
                 await mediaPipeline?.resumeRequests()
                 mediaAccessQuiescenceLatched = false
+                reviewThumbnailReloadGeneration = UUID()
             }
             operationCancellation = nil
             operationTask = nil
@@ -2073,19 +2704,17 @@ final class AppModel: ObservableObject {
             if mayResumeMediaReads {
                 await mediaPipeline?.resumeRequests()
                 mediaAccessQuiescenceLatched = false
+                reviewThumbnailReloadGeneration = UUID()
             }
             operationTask = nil
         }
     }
 
     private func scan(url: URL) {
-        guard (phase == .scanning || !phase.isBusy),
-              !renameIsBusy,
-              !projectOperationInFlight,
-              operationTask == nil
-        else { return }
+        guard !ingestScanAdmissionMustWait else { return }
         scanTask?.cancel()
         invalidateCaptureDateEnrichment()
+        let generation = UUID()
         let effectiveRoot: URL
         let resolvedSourceVolumeID: SourceVolumeID
         let strongSourceIdentity: VolumeIdentity?
@@ -2099,6 +2728,8 @@ final class AppModel: ObservableObject {
             // quarantine has been checked. The activity overload below performs that check
             // before the first directory entry or media byte is read.
             activeSourceIdentity = nil
+            inFlightStrongScanIdentity = identity
+            inFlightStrongScanGeneration = generation
             activeSourceVolumeID = identity.id
             activeSourceRootPath = effectiveRoot.path
             resolvedSourceVolumeID = identity.id
@@ -2106,10 +2737,12 @@ final class AppModel: ObservableObject {
         } else {
             effectiveRoot = url.standardizedFileURL.resolvingSymlinksInPath()
             sourceURL = effectiveRoot
+            activeSourceIdentity = nil
+            inFlightStrongScanIdentity = nil
+            inFlightStrongScanGeneration = nil
             resolvedSourceVolumeID = sourceVolumeID(for: effectiveRoot)
             strongSourceIdentity = nil
         }
-        let generation = UUID()
         scanGeneration = generation
         activeSourceScanScope = .normalizedRoot(effectiveRoot)
         assets = []
@@ -2136,12 +2769,31 @@ final class AppModel: ObservableObject {
         let scanOperationStore = operationStore
         let requiredMediaReadIsolationGeneration = mediaReadIsolationGeneration
         let requiredMediaReadIsolationTask = mediaReadIsolationTask
+        let taskID = UUID()
+        cancellingIngestScanGeneration = nil
+        activeIngestScanTaskIDs.insert(taskID)
         scanTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if scanGeneration == generation {
                     scanTask = nil
+                    if cancellingIngestScanGeneration == generation {
+                        cancellingIngestScanGeneration = nil
+                        if mediaReadIsolationFailed {
+                            // Preserve the stronger restart-required message from the isolation task.
+                            phase = .failed("メディア読取停止を確認できません")
+                        } else if mediaAccessQuiescenceLatched,
+                                  mediaReadIsolationGeneration != nil,
+                                  mediaReadIsolationTask != nil {
+                            phase = assets.isEmpty ? .idle : .ready
+                            statusMessage = "スキャンを安全に中止しました。メディア読取は隔離中です。再スキャンまたはカード再挿入が必要です"
+                        } else {
+                            phase = assets.isEmpty ? .idle : .ready
+                            statusMessage = "スキャンを安全に中止しました"
+                        }
+                    }
                 }
+                activeIngestScanTaskIDs.remove(taskID)
             }
             do {
                 try await awaitMediaReadIsolationBeforeFreshScan(
@@ -2178,11 +2830,45 @@ final class AppModel: ObservableObject {
                     scan: result,
                     expectedSourceVolumeID: resolvedSourceVolumeID,
                     scanGeneration: generation,
-                    isolationGeneration: requiredMediaReadIsolationGeneration
+                    isolationGeneration: requiredMediaReadIsolationGeneration,
+                    expectedStrongIdentity: strongSourceIdentity,
+                    scanScope: .normalizedRoot(effectiveRoot)
                 )
+                guard !Task.isCancelled, scanGeneration == generation else { return }
+                if let strongSourceIdentity {
+                    try await requireCurrentStrongScanIdentityOrIsolate(
+                        strongSourceIdentity,
+                        scan: result,
+                        scope: .normalizedRoot(effectiveRoot),
+                        expectedScanGeneration: generation
+                    )
+                    try Task.checkCancellation()
+                    guard scanGeneration == generation else { return }
+                    let current = strongSourceIdentity.mountURL.flatMap {
+                        cardVolumeMonitor?.identity(containing: $0)
+                    }
+                    guard Self.permitsStrongScanPublication(
+                        expected: strongSourceIdentity,
+                        inFlight: inFlightStrongScanIdentity,
+                        current: current,
+                        scan: result,
+                        scope: .normalizedRoot(effectiveRoot),
+                        expectedScanGeneration: generation,
+                        inFlightScanGeneration: inFlightStrongScanGeneration,
+                        currentScanGeneration: scanGeneration
+                    ) else {
+                        guard await isolateMediaAfterStrongScanIdentityFailure(
+                            expected: strongSourceIdentity,
+                            expectedScanGeneration: generation
+                        ) else { throw CancellationError() }
+                        throw UMISCoreError.identityChanged
+                    }
+                }
                 coreScanResult = result
                 if let strongSourceIdentity {
                     activeSourceIdentity = strongSourceIdentity
+                    inFlightStrongScanIdentity = nil
+                    inFlightStrongScanGeneration = nil
                     activeSourceVolumeID = strongSourceIdentity.id
                     activeSourceRootPath = effectiveRoot.path
                 } else if activeSourceIdentity?.id != result.sourceVolumeID
@@ -2220,6 +2906,14 @@ final class AppModel: ObservableObject {
                 guard scanGeneration == generation, !Task.isCancelled else { return }
                 coreScanResult = nil
                 activeSourceScanScope = nil
+                if Self.preservesRestartRequiredIsolationFailure(
+                    requiredIsolationGeneration: requiredMediaReadIsolationGeneration,
+                    currentIsolationGeneration: mediaReadIsolationGeneration,
+                    mediaReadIsolationFailed: mediaReadIsolationFailed
+                ) {
+                    phase = .failed("メディア読取停止を確認できません")
+                    return
+                }
                 phase = .failed(userFacingMessage(for: error))
                 statusMessage = "素材フォルダを安全に走査できませんでした"
             }
@@ -2232,7 +2926,7 @@ final class AppModel: ObservableObject {
             scan(url: items[0])
             return
         }
-        guard !phase.isBusy, !renameIsBusy, operationTask == nil else { return }
+        guard !phase.isBusy, !ingestScanAdmissionMustWait else { return }
         let itemScope = AppSourceScanScope.normalizedItems(items)
         guard case let .items(scopedItems) = itemScope, !scopedItems.isEmpty else { return }
         let cardIdentities = scopedItems.compactMap { cardVolumeMonitor?.identity(containing: $0) }
@@ -2255,6 +2949,8 @@ final class AppModel: ObservableObject {
         scanGeneration = generation
         activeSourceScanScope = itemScope
         activeSourceIdentity = nil
+        inFlightStrongScanIdentity = droppedStrongIdentity
+        inFlightStrongScanGeneration = droppedStrongIdentity == nil ? nil : generation
         activeSourceVolumeID = droppedStrongIdentity?.id
         activeSourceRootPath = nil
         assets = []
@@ -2268,6 +2964,10 @@ final class AppModel: ObservableObject {
         sceneAssignments.removeAll()
         scanErrors = []
         invalidateVerifiedIngestIntent()
+        pendingCardIdentitySummary = ""
+        pendingFinalVerificationAt = nil
+        pendingRequiredAssetCount = 0
+        pendingVerifiedDeliveryCount = 0
         showCardEraseConfirmation = false
         phase = .scanning
         statusMessage = "ドロップされた素材をスキャンしています"
@@ -2279,12 +2979,31 @@ final class AppModel: ObservableObject {
         let scanOperationStore = operationStore
         let requiredMediaReadIsolationGeneration = mediaReadIsolationGeneration
         let requiredMediaReadIsolationTask = mediaReadIsolationTask
+        let taskID = UUID()
+        cancellingIngestScanGeneration = nil
+        activeIngestScanTaskIDs.insert(taskID)
         scanTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if scanGeneration == generation {
                     scanTask = nil
+                    if cancellingIngestScanGeneration == generation {
+                        cancellingIngestScanGeneration = nil
+                        if mediaReadIsolationFailed {
+                            // Preserve the stronger restart-required message from the isolation task.
+                            phase = .failed("メディア読取停止を確認できません")
+                        } else if mediaAccessQuiescenceLatched,
+                                  mediaReadIsolationGeneration != nil,
+                                  mediaReadIsolationTask != nil {
+                            phase = assets.isEmpty ? .idle : .ready
+                            statusMessage = "スキャンを安全に中止しました。メディア読取は隔離中です。再スキャンまたはカード再挿入が必要です"
+                        } else {
+                            phase = assets.isEmpty ? .idle : .ready
+                            statusMessage = "スキャンを安全に中止しました"
+                        }
+                    }
                 }
+                activeIngestScanTaskIDs.remove(taskID)
             }
             do {
                 try await awaitMediaReadIsolationBeforeFreshScan(
@@ -2321,8 +3040,40 @@ final class AppModel: ObservableObject {
                     scan: snapshot,
                     expectedSourceVolumeID: droppedVolumeID,
                     scanGeneration: generation,
-                    isolationGeneration: requiredMediaReadIsolationGeneration
+                    isolationGeneration: requiredMediaReadIsolationGeneration,
+                    expectedStrongIdentity: droppedStrongIdentity,
+                    scanScope: itemScope
                 )
+                guard !Task.isCancelled, scanGeneration == generation else { return }
+                if let droppedStrongIdentity {
+                    try await requireCurrentStrongScanIdentityOrIsolate(
+                        droppedStrongIdentity,
+                        scan: snapshot,
+                        scope: itemScope,
+                        expectedScanGeneration: generation
+                    )
+                    try Task.checkCancellation()
+                    guard scanGeneration == generation else { return }
+                    let current = droppedStrongIdentity.mountURL.flatMap {
+                        cardVolumeMonitor?.identity(containing: $0)
+                    }
+                    guard Self.permitsStrongScanPublication(
+                        expected: droppedStrongIdentity,
+                        inFlight: inFlightStrongScanIdentity,
+                        current: current,
+                        scan: snapshot,
+                        scope: itemScope,
+                        expectedScanGeneration: generation,
+                        inFlightScanGeneration: inFlightStrongScanGeneration,
+                        currentScanGeneration: scanGeneration
+                    ) else {
+                        guard await isolateMediaAfterStrongScanIdentityFailure(
+                            expected: droppedStrongIdentity,
+                            expectedScanGeneration: generation
+                        ) else { throw CancellationError() }
+                        throw UMISCoreError.identityChanged
+                    }
+                }
                 sourceURL = snapshot.root
                 coreScanResult = snapshot
                 activeSourceVolumeID = droppedVolumeID
@@ -2331,6 +3082,8 @@ final class AppModel: ObservableObject {
                     strongIdentity: droppedStrongIdentity,
                     scan: snapshot
                 )
+                inFlightStrongScanIdentity = nil
+                inFlightStrongScanGeneration = nil
                 assets = snapshot.assets.map(AppAsset.init(coreAsset:))
                 policyReviewAssetIDs = Self.policyReviewIDs(in: snapshot)
                 scanErrors = snapshot.issues.map { "\($0.relativePath): \($0.message)" }
@@ -2365,9 +3118,27 @@ final class AppModel: ObservableObject {
                 activeSourceRootPath = nil
                 assets = []
                 scanErrors = [userFacingMessage(for: error)]
+                if Self.preservesRestartRequiredIsolationFailure(
+                    requiredIsolationGeneration: requiredMediaReadIsolationGeneration,
+                    currentIsolationGeneration: mediaReadIsolationGeneration,
+                    mediaReadIsolationFailed: mediaReadIsolationFailed
+                ) {
+                    phase = .failed("メディア読取停止を確認できません")
+                    return
+                }
                 phase = .failed(userFacingMessage(for: error))
             }
         }
+    }
+
+    nonisolated static func preservesRestartRequiredIsolationFailure(
+        requiredIsolationGeneration: UUID?,
+        currentIsolationGeneration: UUID?,
+        mediaReadIsolationFailed: Bool
+    ) -> Bool {
+        mediaReadIsolationFailed
+            && requiredIsolationGeneration != nil
+            && requiredIsolationGeneration == currentIsolationGeneration
     }
 
     private func awaitMediaReadIsolationBeforeFreshScan(
@@ -2403,8 +3174,18 @@ final class AppModel: ObservableObject {
         scan: ScanResult,
         expectedSourceVolumeID: SourceVolumeID,
         scanGeneration: UUID,
-        isolationGeneration: UUID?
+        isolationGeneration: UUID?,
+        expectedStrongIdentity: VolumeIdentity?,
+        scanScope: AppSourceScanScope
     ) async throws {
+        if let expectedStrongIdentity {
+            try await requireCurrentStrongScanIdentityOrIsolate(
+                expectedStrongIdentity,
+                scan: scan,
+                scope: scanScope,
+                expectedScanGeneration: scanGeneration
+            )
+        }
         guard let isolationGeneration else { return }
         guard Self.permitsMediaReadResumeAfterFreshScan(
             scan: scan,
@@ -2418,7 +3199,52 @@ final class AppModel: ObservableObject {
             throw UMISCoreError.sourceChanged("新しいソースのフルスキャン世代が一致しません")
         }
         await mediaPipeline?.resumeRequests()
-        try Task.checkCancellation()
+        if let expectedStrongIdentity {
+            do {
+                try await revalidateCurrentStrongScanIdentity(
+                    expectedStrongIdentity,
+                    scan: scan,
+                    scope: scanScope,
+                    expectedScanGeneration: scanGeneration
+                )
+            } catch is CancellationError {
+                let suspensionToken = await mediaPipeline?.suspendAndAwaitQuiescence()
+                await restoreMediaReadsAfterObsoleteStrongScanSuspensionIfSafe(
+                    token: suspensionToken,
+                    obsoleteScanGeneration: scanGeneration,
+                    pipeline: mediaPipeline
+                )
+                throw CancellationError()
+            } catch {
+                // The current card can disappear while the pipeline actor is resuming. Return
+                // to a quiescent state before starting a fresh isolation generation.
+                let suspensionToken = await mediaPipeline?.suspendAndAwaitQuiescence()
+                guard await isolateMediaAfterStrongScanIdentityFailure(
+                    expected: expectedStrongIdentity,
+                    expectedScanGeneration: scanGeneration
+                ) else {
+                    await restoreMediaReadsAfterObsoleteStrongScanSuspensionIfSafe(
+                        token: suspensionToken,
+                        obsoleteScanGeneration: scanGeneration,
+                        pipeline: mediaPipeline
+                    )
+                    throw CancellationError()
+                }
+                throw error
+            }
+        }
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // Cancellation after the actor hop must not leave a formerly isolated pipeline live.
+            let suspensionToken = await mediaPipeline?.suspendAndAwaitQuiescence()
+            await restoreMediaReadsAfterObsoleteStrongScanSuspensionIfSafe(
+                token: suspensionToken,
+                obsoleteScanGeneration: scanGeneration,
+                pipeline: mediaPipeline
+            )
+            throw error
+        }
         guard Self.permitsMediaReadResumeAfterFreshScan(
             scan: scan,
             expectedSourceVolumeID: expectedSourceVolumeID,
@@ -2430,12 +3256,334 @@ final class AppModel: ObservableObject {
         else {
             // A removal or rescan raced the resume await. Return the pipeline to a
             // fail-closed state; the newest isolation generation owns the next resume.
-            await mediaPipeline?.suspendAndAwaitQuiescence()
+            let suspensionToken = await mediaPipeline?.suspendAndAwaitQuiescence()
+            await restoreMediaReadsAfterObsoleteStrongScanSuspensionIfSafe(
+                token: suspensionToken,
+                obsoleteScanGeneration: scanGeneration,
+                pipeline: mediaPipeline
+            )
             throw UMISCoreError.sourceChanged("メディア読取再開中にソース世代が変更されました")
         }
         mediaAccessQuiescenceLatched = false
+        reviewThumbnailReloadGeneration = UUID()
         mediaReadIsolationGeneration = nil
         mediaReadIsolationTask = nil
+        mediaReadIsolationFailed = false
+    }
+
+    private func restoreMediaReadsAfterObsoleteStrongScanSuspensionIfSafe(
+        token: MediaPipelineSuspensionToken?,
+        obsoleteScanGeneration: UUID,
+        pipeline: MediaPipeline?
+    ) async {
+        guard let token, let pipeline,
+              Self.permitsObsoleteStrongScanSuspensionRollback(
+                obsoleteScanGeneration: obsoleteScanGeneration,
+                currentScanGeneration: scanGeneration,
+                hasMediaReadIsolationGeneration: mediaReadIsolationGeneration != nil,
+                hasMediaReadIsolationTask: mediaReadIsolationTask != nil,
+                mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+                destructiveOutcomeQuarantined: destructiveOutcomeQuarantined,
+                mediaCacheOperationInFlight: mediaCacheOperationInFlight,
+                reviewMetadataIsWriting: reviewMetadataIsWriting
+              )
+        else { return }
+
+        guard await pipeline.resumeRequests(ifCurrentSuspension: token) else { return }
+        guard Self.permitsObsoleteStrongScanSuspensionRollback(
+            obsoleteScanGeneration: obsoleteScanGeneration,
+            currentScanGeneration: scanGeneration,
+            hasMediaReadIsolationGeneration: mediaReadIsolationGeneration != nil,
+            hasMediaReadIsolationTask: mediaReadIsolationTask != nil,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            destructiveOutcomeQuarantined: destructiveOutcomeQuarantined,
+            mediaCacheOperationInFlight: mediaCacheOperationInFlight,
+            reviewMetadataIsWriting: reviewMetadataIsWriting
+        ) else {
+            await pipeline.suspendAndAwaitQuiescence()
+            return
+        }
+        ingestThumbnailReloadGeneration = UUID()
+        reviewThumbnailReloadGeneration = UUID()
+    }
+
+    nonisolated static func permitsObsoleteStrongScanSuspensionRollback(
+        obsoleteScanGeneration: UUID,
+        currentScanGeneration: UUID,
+        hasMediaReadIsolationGeneration: Bool,
+        hasMediaReadIsolationTask: Bool,
+        mediaAccessQuiescenceLatched: Bool,
+        destructiveOutcomeQuarantined: Bool,
+        mediaCacheOperationInFlight: Bool,
+        reviewMetadataIsWriting: Bool
+    ) -> Bool {
+        obsoleteScanGeneration != currentScanGeneration
+            && !hasMediaReadIsolationGeneration
+            && !hasMediaReadIsolationTask
+            && !mediaAccessQuiescenceLatched
+            && !destructiveOutcomeQuarantined
+            && !mediaCacheOperationInFlight
+            && !reviewMetadataIsWriting
+    }
+
+    private func requireCurrentStrongScanIdentityOrIsolate(
+        _ expected: VolumeIdentity,
+        scan: ScanResult,
+        scope: AppSourceScanScope,
+        expectedScanGeneration: UUID
+    ) async throws {
+        do {
+            try await revalidateCurrentStrongScanIdentity(
+                expected,
+                scan: scan,
+                scope: scope,
+                expectedScanGeneration: expectedScanGeneration
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard await isolateMediaAfterStrongScanIdentityFailure(
+                expected: expected,
+                expectedScanGeneration: expectedScanGeneration
+            ) else { throw CancellationError() }
+            throw error
+        }
+    }
+
+    /// Revalidates both current Disk Arbitration state and the actor registry. The monitor check
+    /// catches the narrow window before the asynchronous disappearance callback reaches MainActor;
+    /// the registry check independently rejects a stale or replaced insertion session.
+    private func revalidateCurrentStrongScanIdentity(
+        _ expected: VolumeIdentity,
+        scan: ScanResult,
+        scope: AppSourceScanScope,
+        expectedScanGeneration: UUID
+    ) async throws {
+        guard let mountURL = expected.mountURL else { throw UMISCoreError.identityChanged }
+        let monitorBeforeRegistry = cardVolumeMonitor?.identity(containing: mountURL)
+        guard Self.permitsStrongScanPublication(
+            expected: expected,
+            inFlight: inFlightStrongScanIdentity,
+            current: monitorBeforeRegistry,
+            scan: scan,
+            scope: scope,
+            expectedScanGeneration: expectedScanGeneration,
+            inFlightScanGeneration: inFlightStrongScanGeneration,
+            currentScanGeneration: scanGeneration
+        ) else { throw UMISCoreError.identityChanged }
+
+        let registered = try await volumeRegistry.current(sourceVolumeID: expected.id)
+        guard Self.permitsStrongScanPublication(
+            expected: expected,
+            inFlight: inFlightStrongScanIdentity,
+            current: registered,
+            scan: scan,
+            scope: scope,
+            expectedScanGeneration: expectedScanGeneration,
+            inFlightScanGeneration: inFlightStrongScanGeneration,
+            currentScanGeneration: scanGeneration
+        ) else { throw UMISCoreError.identityChanged }
+
+        let monitorAfterRegistry = cardVolumeMonitor?.identity(containing: mountURL)
+        guard Self.permitsStrongScanPublication(
+            expected: expected,
+            inFlight: inFlightStrongScanIdentity,
+            current: monitorAfterRegistry,
+            scan: scan,
+            scope: scope,
+            expectedScanGeneration: expectedScanGeneration,
+            inFlightScanGeneration: inFlightStrongScanGeneration,
+            currentScanGeneration: scanGeneration
+        ) else { throw UMISCoreError.identityChanged }
+    }
+
+    /// Converts any ambiguity after a physical-card scan into a new read isolation generation.
+    /// This helper also invalidates every destructive capability derived from the unpublished scan.
+    private func isolateMediaAfterStrongScanIdentityFailure(
+        expected: VolumeIdentity,
+        expectedScanGeneration: UUID
+    ) async -> Bool {
+        guard Self.ownsInFlightStrongScan(
+            expected: expected,
+            expectedScanGeneration: expectedScanGeneration,
+            inFlight: inFlightStrongScanIdentity,
+            inFlightScanGeneration: inFlightStrongScanGeneration,
+            currentScanGeneration: scanGeneration
+        ) else { return false }
+
+        let failedSourceID = expected.id
+        let failureStateGeneration = UUID()
+        mediaAccessQuiescenceLatched = true
+        previewAsset = nil
+        scanGeneration = failureStateGeneration
+        scanTask?.cancel()
+        scanTask = nil
+        invalidateCaptureDateEnrichment()
+        assets = []
+        selectedAssetIDs.removeAll()
+        sceneAssignments.removeAll()
+        policyReviewAssetIDs.removeAll()
+        explicitlyExcludedAssetIDs.removeAll()
+        explicitExclusionEvidenceByAssetID.removeAll()
+        pendingExclusionAssetIDs.removeAll()
+        showAssetExclusionConfirmation = false
+        resetEmptyDirectoryReviewState()
+        scanErrors = []
+        coreScanResult = nil
+        activeSourceScanScope = nil
+        activeSourceIdentity = nil
+        inFlightStrongScanIdentity = nil
+        inFlightStrongScanGeneration = nil
+        activeSourceVolumeID = nil
+        activeSourceRootPath = nil
+        invalidateVerifiedIngestIntent()
+        pendingCardIdentitySummary = ""
+        pendingFinalVerificationAt = nil
+        pendingRequiredAssetCount = 0
+        pendingVerifiedDeliveryCount = 0
+        operationTask?.cancel()
+        if let operationCancellation { Task { await operationCancellation.cancel() } }
+        if let eraseGate { Task { await eraseGate.invalidateAll() } }
+        cardAppearanceRegistrationGenerations.removeValue(forKey: failedSourceID)
+
+        // Replace any old isolation generation before the first await. A newly appearing card
+        // can then wait on this exact generation, but it can never reuse the completed old one.
+        beginUnexpectedRemovalMediaIsolation()
+        let replacementIsolationGeneration = mediaReadIsolationGeneration
+        let replacementIsolationTask = mediaReadIsolationTask
+
+        // Suspend immediately in case the identity changed during `resumeRequests()`.
+        await mediaPipeline?.suspendAndAwaitQuiescence()
+        let isolationSucceeded = if let replacementIsolationTask {
+            await replacementIsolationTask.value
+        } else {
+            false
+        }
+        if !isolationSucceeded {
+            guard Self.ownsStrongScanIsolationFailureState(
+                failureStateGeneration: failureStateGeneration,
+                currentScanGeneration: scanGeneration,
+                replacementIsolationGeneration: replacementIsolationGeneration,
+                currentIsolationGeneration: mediaReadIsolationGeneration,
+                mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched
+            ) else { return true }
+            // Preserve the isolation task's more actionable restart-required status; only close
+            // the stale `.scanning` phase that belonged to this failed generation.
+            phase = .failed("メディア読取停止を確認できません")
+            return true
+        }
+        guard Self.commitsStrongScanIsolationFailure(
+            failureStateGeneration: failureStateGeneration,
+            currentScanGeneration: scanGeneration,
+            replacementIsolationGeneration: replacementIsolationGeneration,
+            currentIsolationGeneration: mediaReadIsolationGeneration,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched,
+            isolationSucceeded: isolationSucceeded
+        ) else { return true }
+        phase = .failed("カードの挿入IDがスキャン中に変化しました")
+        statusMessage = "カードを再挿入し、フルスキャンと取り込み検証をやり直してください"
+        cardInitializationStatus = "スキャン中の媒体変更を検出したため初期化許可を失効しました"
+        return true
+    }
+
+    nonisolated static func ownsInFlightStrongScan(
+        expected: VolumeIdentity,
+        expectedScanGeneration: UUID,
+        inFlight: VolumeIdentity?,
+        inFlightScanGeneration: UUID?,
+        currentScanGeneration: UUID
+    ) -> Bool {
+        guard let inFlight else { return false }
+        return inFlight.id == expected.id
+            && inFlight.arrivalGeneration == expected.arrivalGeneration
+            && inFlight.securityDigest == expected.securityDigest
+            && inFlightScanGeneration == expectedScanGeneration
+            && currentScanGeneration == expectedScanGeneration
+    }
+
+    nonisolated static func commitsStrongScanIsolationFailure(
+        failureStateGeneration: UUID,
+        currentScanGeneration: UUID,
+        replacementIsolationGeneration: UUID?,
+        currentIsolationGeneration: UUID?,
+        mediaAccessQuiescenceLatched: Bool,
+        isolationSucceeded: Bool
+    ) -> Bool {
+        ownsStrongScanIsolationFailureState(
+            failureStateGeneration: failureStateGeneration,
+            currentScanGeneration: currentScanGeneration,
+            replacementIsolationGeneration: replacementIsolationGeneration,
+            currentIsolationGeneration: currentIsolationGeneration,
+            mediaAccessQuiescenceLatched: mediaAccessQuiescenceLatched
+        ) && isolationSucceeded
+    }
+
+    nonisolated static func ownsStrongScanIsolationFailureState(
+        failureStateGeneration: UUID,
+        currentScanGeneration: UUID,
+        replacementIsolationGeneration: UUID?,
+        currentIsolationGeneration: UUID?,
+        mediaAccessQuiescenceLatched: Bool
+    ) -> Bool {
+        failureStateGeneration == currentScanGeneration
+            && replacementIsolationGeneration != nil
+            && replacementIsolationGeneration == currentIsolationGeneration
+            && mediaAccessQuiescenceLatched
+    }
+
+    nonisolated static func cardDisappearanceMatches(
+        sourceID: SourceVolumeID,
+        arrivalGeneration: UUID,
+        active: VolumeIdentity?,
+        inFlight: VolumeIdentity?
+    ) -> Bool {
+        [active, inFlight].compactMap { $0 }.contains {
+            $0.id == sourceID && $0.arrivalGeneration == arrivalGeneration
+        }
+    }
+
+    nonisolated static func permitsStrongScanPublication(
+        expected: VolumeIdentity,
+        inFlight: VolumeIdentity?,
+        current: VolumeIdentity?,
+        scan: ScanResult,
+        scope: AppSourceScanScope,
+        expectedScanGeneration: UUID,
+        inFlightScanGeneration: UUID?,
+        currentScanGeneration: UUID
+    ) -> Bool {
+        guard expected.identityStrength == .strongForCurrentInsertion,
+              let expectedMountURL = expected.mountURL,
+              let current,
+              ownsInFlightStrongScan(
+                expected: expected,
+                expectedScanGeneration: expectedScanGeneration,
+                inFlight: inFlight,
+                inFlightScanGeneration: inFlightScanGeneration,
+                currentScanGeneration: currentScanGeneration
+              ),
+              current.identityStrength == .strongForCurrentInsertion,
+              current.id == expected.id,
+              current.arrivalGeneration == expected.arrivalGeneration,
+              current.securityDigest == expected.securityDigest,
+              scan.sourceVolumeID == expected.id
+        else { return false }
+
+        let expectedMountPath = expectedMountURL.standardizedFileURL
+            .resolvingSymlinksInPath().path
+        guard current.mountURL?.standardizedFileURL.resolvingSymlinksInPath().path
+                == expectedMountPath
+        else { return false }
+
+        switch scope {
+        case let .root(root):
+            return root.standardizedFileURL.resolvingSymlinksInPath().path == expectedMountPath
+                && scan.root.standardizedFileURL.resolvingSymlinksInPath().path == expectedMountPath
+        case let .items(items):
+            return !items.isEmpty
+                && items.allSatisfy { isURL($0, containedBy: expectedMountURL) }
+                && isURL(scan.root, containedBy: expectedMountURL)
+        }
     }
 
     nonisolated static func permitsMediaReadResumeAfterFreshScan(
@@ -2509,6 +3657,9 @@ final class AppModel: ObservableObject {
                 captureDateEnrichmentTask = nil
                 captureDateEnrichmentTaskGeneration = nil
                 captureDateEnrichmentTaskTimeZoneIdentifier = nil
+                if phase == .ready, operationTask == nil {
+                    statusMessage = "撮影日時のバックグラウンド解析を中断しました。取り込み開始時に再確定します"
+                }
                 return nil
             } catch {
                 guard scanGeneration == generation,
@@ -2857,32 +4008,6 @@ final class AppModel: ObservableObject {
         return expanded
     }
 
-    /// Selection-copy is a delivery boundary, so it uses Core's strict full-inventory companion
-    /// layout rather than the UI convenience expansion. Selecting either a primary or sidecar
-    /// delivers that complete logical group. Sidecar-only and ambiguous ownership fail closed.
-    nonisolated static func expandedValidatedCompanionSelection(
-        selectedIDs: Set<MediaAssetID>,
-        assets: [MediaAsset]
-    ) throws -> Set<MediaAssetID> {
-        guard !selectedIDs.isEmpty else { throw UMISCoreError.emptyRequiredSet }
-        let inventoryIDs = Set(assets.map(\.id))
-        guard selectedIDs.isSubset(of: inventoryIDs) else {
-            throw UMISCoreError.invalidPlan(
-                "選択項目の安定IDが凍結した全体スキャンに存在しません"
-            )
-        }
-        let layout = try MediaCompanionGrouping.layout(for: assets)
-        let selectedGroups = Set(layout.compactMap { member in
-            selectedIDs.contains(member.assetID) ? member.logicalOutputGroupKey : nil
-        })
-        guard !selectedGroups.isEmpty else {
-            throw UMISCoreError.invalidPlan("選択項目の付随ファイル構成を解決できません")
-        }
-        return Set(layout.compactMap { member in
-            selectedGroups.contains(member.logicalOutputGroupKey) ? member.assetID : nil
-        })
-    }
-
     /// Produces one deterministic logical sequence per primary/companion group. The returned order
     /// matches the scanner order so filenames are stable across UI selection order changes.
     nonisolated static func companionPlanningLayout(
@@ -2978,7 +4103,11 @@ final class AppModel: ObservableObject {
                         throw UMISCoreError.sourceChanged(asset.canonicalURL.path)
                     }
                     if failure.code == .cancelled {
-                        try Task.checkCancellation()
+                        // Coordinator cancellation can be initiated by cache clear, review
+                        // mutation, card isolation, or another pipeline owner without cancelling
+                        // this parent Task. It is never evidence that metadata was unavailable;
+                        // treating it as mtime fallback could freeze incorrect filenames/sequence.
+                        throw CancellationError()
                     }
                     asset.capturedAt = asset.capturedAt ?? asset.modifiedAt
                 }
@@ -3383,9 +4512,12 @@ final class AppModel: ObservableObject {
         case let .disappeared(sourceID, arrivalGeneration):
             cardAppearanceRegistrationGenerations.removeValue(forKey: sourceID)
             deferredCardScanGeneration = nil
-            guard activeSourceIdentity?.id == sourceID,
-                  activeSourceIdentity?.arrivalGeneration == arrivalGeneration
-            else { return }
+            guard Self.cardDisappearanceMatches(
+                sourceID: sourceID,
+                arrivalGeneration: arrivalGeneration,
+                active: activeSourceIdentity,
+                inFlight: inFlightStrongScanIdentity
+            ) else { return }
             if phase == .erasingCard {
                 statusMessage = "初期化に伴う一時的なアンマウントを検出しました"
                 return
@@ -3411,11 +4543,18 @@ final class AppModel: ObservableObject {
             resetEmptyDirectoryReviewState()
             scanErrors = []
             coreScanResult = nil
+            activeSourceScanScope = nil
             beginUnexpectedRemovalMediaIsolation()
             activeSourceIdentity = nil
+            inFlightStrongScanIdentity = nil
+            inFlightStrongScanGeneration = nil
             activeSourceVolumeID = nil
             activeSourceRootPath = nil
             invalidateVerifiedIngestIntent()
+            pendingCardIdentitySummary = ""
+            pendingFinalVerificationAt = nil
+            pendingRequiredAssetCount = 0
+            pendingVerifiedDeliveryCount = 0
             operationTask?.cancel()
             if let operationCancellation { Task { await operationCancellation.cancel() } }
             if let eraseGate { Task { await eraseGate.invalidateAll() } }
@@ -3446,6 +4585,12 @@ final class AppModel: ObservableObject {
 
     private func acceptRegisteredCardAppearance(_ identity: VolumeIdentity) {
         guard let sourceURL, Self.isURL(sourceURL, containedBy: identity.mountURL) else { return }
+        guard Self.permitsNewMediaIsolationAttempt(
+            mediaReadIsolationFailed: mediaReadIsolationFailed
+        ) else {
+            retainRestartRequiredIsolationState(rejecting: identity)
+            return
+        }
         let previousVolumeID = activeSourceVolumeID
         let previousRootPath = activeSourceRootPath
         let canonicalRoot = identity.mountURL?.standardizedFileURL.resolvingSymlinksInPath()
@@ -3459,27 +4604,25 @@ final class AppModel: ObservableObject {
         activeSourceRootPath = canonicalRootPath
         cardInitializationStatus = "リムーバブルカードを強い物理IDと永続隔離ストアで照合しました"
         guard identityChanged, let canonicalRoot else { return }
-        let mustDeferScan = projectOperationInFlight
-            || renameIsBusy
-            || operationTask != nil
-            || (phase.isBusy && phase != .scanning)
+        let mustDeferScan = ingestScanAdmissionMustWait
         if mustDeferScan {
             let deferredGeneration = UUID()
             deferredCardScanGeneration = deferredGeneration
             statusMessage = "実行中の安全停止が完了した後に、登録済みカードをフルスキャンします"
             Task { [weak self] in
                 guard let self else { return }
-                while projectOperationInFlight
-                    || renameIsBusy
-                    || operationTask != nil
-                    || (phase.isBusy && phase != .scanning) {
+                while ingestScanAdmissionMustWait {
                     try? await Task.sleep(for: .milliseconds(50))
                     guard deferredCardScanGeneration == deferredGeneration else { return }
+                    guard Self.permitsNewMediaIsolationAttempt(
+                        mediaReadIsolationFailed: mediaReadIsolationFailed
+                    ) else {
+                        retainRestartRequiredIsolationState(rejecting: identity)
+                        return
+                    }
                 }
                 guard deferredCardScanGeneration == deferredGeneration,
-                      phase == .scanning || !phase.isBusy,
-                      !renameIsBusy,
-                      operationTask == nil,
+                      !ingestScanAdmissionMustWait,
                       Self.isURL(sourceURL, containedBy: identity.mountURL),
                       cardVolumeMonitor?.identity(containing: canonicalRoot)?.securityDigest
                       == identity.securityDigest
@@ -3489,7 +4632,7 @@ final class AppModel: ObservableObject {
                 self.sourceURL = canonicalRoot
                 scan(url: canonicalRoot)
             }
-        } else if phase == .scanning || !phase.isBusy {
+        } else if !ingestScanAdmissionMustWait {
             deferredCardScanGeneration = nil
             scanTask?.cancel()
             self.sourceURL = canonicalRoot
@@ -3506,17 +4649,31 @@ final class AppModel: ObservableObject {
         assets = []
         selectedAssetIDs.removeAll()
         sceneAssignments.removeAll()
+        policyReviewAssetIDs.removeAll()
+        explicitlyExcludedAssetIDs.removeAll()
+        explicitExclusionEvidenceByAssetID.removeAll()
+        pendingExclusionAssetIDs.removeAll()
+        showAssetExclusionConfirmation = false
+        resetEmptyDirectoryReviewState()
+        scanErrors = []
         coreScanResult = nil
+        activeSourceScanScope = nil
         activeSourceIdentity = nil
+        inFlightStrongScanIdentity = nil
+        inFlightStrongScanGeneration = nil
         activeSourceVolumeID = nil
         activeSourceRootPath = nil
         invalidateVerifiedIngestIntent()
+        pendingCardIdentitySummary = ""
+        pendingFinalVerificationAt = nil
+        pendingRequiredAssetCount = 0
+        pendingVerifiedDeliveryCount = 0
         phase = .failed(message)
         statusMessage = message
         cardInitializationStatus = "隔離中のカードは読取・取込・取出・初期化できません"
     }
 
-    private static func isURL(_ url: URL, containedBy mountURL: URL?) -> Bool {
+    nonisolated private static func isURL(_ url: URL, containedBy mountURL: URL?) -> Bool {
         guard let mountURL else { return false }
         let candidate = url.standardizedFileURL.resolvingSymlinksInPath().path
         let mount = mountURL.standardizedFileURL.resolvingSymlinksInPath().path
@@ -3942,6 +5099,8 @@ final class AppModel: ObservableObject {
             cardAppearanceRegistrationGenerations.removeValue(forKey: activeSourceVolumeID)
         }
         activeSourceIdentity = nil
+        inFlightStrongScanIdentity = nil
+        inFlightStrongScanGeneration = nil
         activeSourceVolumeID = nil
         activeSourceRootPath = nil
         invalidateVerifiedIngestIntent()
@@ -3954,6 +5113,12 @@ final class AppModel: ObservableObject {
     }
 
     private func beginUnexpectedRemovalMediaIsolation() {
+        guard Self.permitsNewMediaIsolationAttempt(
+            mediaReadIsolationFailed: mediaReadIsolationFailed
+        ) else {
+            retainRestartRequiredIsolationState(rejecting: nil)
+            return
+        }
         mediaReadIsolationTask?.cancel()
         let generation = UUID()
         mediaReadIsolationGeneration = generation
@@ -3967,14 +5132,37 @@ final class AppModel: ObservableObject {
                 guard mediaReadIsolationGeneration == generation,
                       mediaAccessQuiescenceLatched
                 else { return false }
+                mediaReadIsolationFailed = false
                 return true
             } catch {
                 guard mediaReadIsolationGeneration == generation else { return false }
+                mediaReadIsolationFailed = true
                 statusMessage = "旧カードの再生・メディア読取停止を確認できません。アプリを再起動してください"
                 cardInitializationStatus = "メディア読取を検疫中（再開禁止）"
                 return false
             }
         }
+    }
+
+    nonisolated static func permitsNewMediaIsolationAttempt(
+        mediaReadIsolationFailed: Bool
+    ) -> Bool {
+        !mediaReadIsolationFailed
+    }
+
+    private func retainRestartRequiredIsolationState(rejecting identity: VolumeIdentity?) {
+        deferredCardScanGeneration = nil
+        if let identity {
+            if activeSourceIdentity?.securityDigest == identity.securityDigest {
+                activeSourceIdentity = nil
+            }
+            if activeSourceVolumeID == identity.id {
+                activeSourceVolumeID = nil
+                activeSourceRootPath = nil
+            }
+        }
+        statusMessage = "旧カードの再生・メディア読取停止を確認できません。アプリを再起動してください"
+        cardInitializationStatus = "メディア読取の再起動必須検疫中（この起動中は再開禁止）"
     }
 
     private func waitForPreviewPlaybackQuiescence() async throws {

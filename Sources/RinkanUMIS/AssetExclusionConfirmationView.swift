@@ -14,7 +14,7 @@ struct AssetExclusionConfirmationView: View {
     }
 
     private var pendingBytes: Int64 {
-        model.pendingExclusionAssets.reduce(0) { $0 + $1.byteCount }
+        model.pendingExclusionTotalBytes
     }
 
     var body: some View {

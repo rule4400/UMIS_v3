@@ -5,6 +5,7 @@
 Before handing off a change:
 
 ```sh
+Vendor/AdobeXMP/Scripts/verify_xcframework.sh
 swift test --parallel
 swift build --configuration release
 UMIS_ALLOW_ADHOC=1 Scripts/build_app.sh

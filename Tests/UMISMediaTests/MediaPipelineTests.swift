@@ -359,8 +359,9 @@ final class MediaPipelineTests: XCTestCase {
 
         let suspensionCompleted = AsyncCompletionFlag()
         let suspension = Task {
-            await pipeline.suspendAndAwaitQuiescence()
+            let token = await pipeline.suspendAndAwaitQuiescence()
             await suspensionCompleted.markComplete()
+            return token
         }
         let suspensionStarted = await eventually {
             await pipeline.isSuspendedForTesting()
@@ -372,7 +373,7 @@ final class MediaPipelineTests: XCTestCase {
         XCTAssertFalse(returnedWhileFacadeRequestWasBlocked)
 
         await enqueueGate.open()
-        await suspension.value
+        let firstSuspensionToken = await suspension.value
         let completedAfterAdmissionDrained = await suspensionCompleted.value()
         XCTAssertTrue(completedAfterAdmissionDrained)
         _ = try? await request.value
@@ -388,7 +389,93 @@ final class MediaPipelineTests: XCTestCase {
         } catch let failure as MediaPipelineFailure {
             XCTAssertEqual(failure.code, .cancelled)
         }
+        let newerSuspensionToken = await pipeline.suspendAndAwaitQuiescence()
+        let staleResumeSucceeded = await pipeline.resumeRequests(
+            ifCurrentSuspension: firstSuspensionToken
+        )
+        XCTAssertFalse(staleResumeSucceeded)
+        let remainedSuspendedForNewerOwner = await pipeline.isSuspendedForTesting()
+        XCTAssertTrue(remainedSuspendedForNewerOwner)
+        let currentResumeSucceeded = await pipeline.resumeRequests(
+            ifCurrentSuspension: newerSuspensionToken
+        )
+        XCTAssertTrue(currentResumeSucceeded)
+        let resumedCurrentOwner = await pipeline.isSuspendedForTesting()
+        XCTAssertFalse(resumedCurrentOwner)
+
+        let invalidatedByResume = await pipeline.suspendAndAwaitQuiescence()
         await pipeline.resumeRequests()
+        let invalidatedResumeSucceeded = await pipeline.resumeRequests(
+            ifCurrentSuspension: invalidatedByResume
+        )
+        XCTAssertFalse(invalidatedResumeSucceeded)
+        let stayedActiveAfterStaleToken = await pipeline.isSuspendedForTesting()
+        XCTAssertFalse(stayedActiveAfterStaleToken)
+    }
+
+    func testQuiescentCacheClearCannotBeRepopulatedByAPreEnqueueRequest() async throws {
+        let directory = try MediaTestFixture.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("clear-admission-race.bin")
+        try Data(repeating: 8, count: 64).write(to: source)
+        let enqueueGate = TestGate()
+        let generator = CountingMediaGenerator(
+            image: try MediaTestFixture.image(width: 16, height: 16)
+        )
+        let pipeline = try MediaPipeline(
+            configuration: MediaTestFixture.configuration(directory: directory),
+            generator: generator,
+            preCoordinatorEnqueueHook: { await enqueueGate.wait() }
+        )
+
+        let request = Task {
+            try await pipeline.thumbnail(
+                for: source,
+                pixelSize: MediaPixelSize(width: 32, height: 32)
+            )
+        }
+        let reachedPreEnqueueGap = await eventually {
+            await enqueueGate.waiterCount() == 1
+        }
+        XCTAssertTrue(reachedPreEnqueueGap)
+
+        let clearCompleted = AsyncCompletionFlag()
+        let clear = Task {
+            try await pipeline.suspendAndClearCaches()
+            await clearCompleted.markComplete()
+        }
+        let clearStarted = await eventually { await pipeline.isSuspendedForTesting() }
+        XCTAssertTrue(clearStarted)
+        let returnedWhileFacadeRequestWasBlocked = await eventually(attempts: 500) {
+            await clearCompleted.value()
+        }
+        XCTAssertFalse(
+            returnedWhileFacadeRequestWasBlocked,
+            "cache clear must wait for facade admissions that have not reached a coordinator"
+        )
+
+        await enqueueGate.open()
+        try await clear.value
+        _ = try? await request.value
+        let didComplete = await clearCompleted.value()
+        let remainsSuspended = await pipeline.isSuspendedForTesting()
+        XCTAssertTrue(didComplete)
+        XCTAssertTrue(
+            remainsSuspended,
+            "cache clear must leave resume ownership to the caller's card-isolation policy"
+        )
+        let cleared = await pipeline.cacheStatistics()
+        XCTAssertEqual(cleared.memoryEntryCount, 0)
+        XCTAssertEqual(cleared.diskEntryCount, 0)
+
+        await pipeline.resumeRequests()
+        _ = try await pipeline.thumbnail(
+            for: source,
+            pixelSize: MediaPixelSize(width: 32, height: 32)
+        )
+        let resumed = await pipeline.cacheStatistics()
+        XCTAssertEqual(resumed.memoryEntryCount, 1)
+        XCTAssertEqual(resumed.diskEntryCount, 1)
     }
 
     func testTwoHundredRequestsAreBoundedCoalescedAndThenMemoryHits() async throws {

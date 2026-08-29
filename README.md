@@ -44,7 +44,8 @@ UMIS_NOTARY_PROFILE=UMIS_NOTARY Scripts/build_release.sh
 - 結果不明の初期化は物理カード単位でSQLiteへ永続隔離し、新しいmount sessionやアプリ再起動でも、最初の読み取り前に拒否します。
 - 既存同名ファイルは内容一致をSHA-256で確認できた場合だけ検証済み重複として扱い、異なる内容を上書きしません。
 - フォルダCopy and Renameは元ファイルを変更せず、全root／companion groupを実行直前に再走査し、一時ファイル・fsync・SHA-256・atomic commit・journalを使用します。
-- 動画／写真本体とXMP・XML・THM等の付随ファイルは、取り込み・選別・Copy and Renameの全経路で同じシーン、連番、出力stem、保存先へ一括配送します。曖昧な対応関係は計画時点で拒否します。
+- 動画／写真本体とXMP・XML・THM等の付随ファイルは、取り込みとCopy and Renameの全経路で同じシーン、連番、出力stem、保存先へ一括配送します。曖昧な対応関係は計画時点で拒否します。
+- 旧「選別」フォルダへの複製機能は削除済みです。取り込み済みアーカイブの選別情報はAdobe互換XMPレーティング（Reject／未評価／1〜5つ星）とFinderカラーで扱い、カードや取り込み中の保存先には書き込みません。
 - NAS／SMB／NFSは、NSWorkspaceのmount lifecycle、volume UUID、filesystem、device、root inodeをprocess-local authorityへ結び付けたcopy-grade保存先として扱います。再mount時は世代を更新し、ネットワーク保存先からのカード初期化は認定durability profileがないため拒否します。
 - SD管理システムやLANからの応答は、ローカルのコピー検証や初期化条件を弱めません。
 - production SD APIが未実装の間、release buildは`DisabledSDManagementGateway`だけを使用します。
@@ -54,7 +55,7 @@ UMIS_NOTARY_PROFILE=UMIS_NOTARY Scripts/build_release.sh
 - `UMISCore`: stable ID、versioned project、SQLite WAL journal、再開、SHA-256検証、rename transaction、retained-handle erase/eject gate、O(1)監査追記
 - `UMISMedia`: ImageIO、QuickLookThumbnailing、AVFoundation、Core Imageによるnative thumbnail／preview／poster／metadata、優先度queue、request coalescing、source-read admission／quiescence、memory pressure、SQLite LRU cache
 - `UMISNetwork`: Ed25519署名済みscene snapshot、rollback／split-brain防止、Keychain pairing、durable SD outbox境界
-- `RinkanUMIS`: SwiftUI、NSCollectionView virtualized grid、カード監視、3-pane ingest、履歴、旧JSON移行、復旧可能なProject Trash
+- `RinkanUMIS`: SwiftUI、1物理px間隔のNSCollectionView virtualized grid、カード監視、3-pane ingest、XMP評価／Finderカラー、履歴、旧JSON移行、復旧可能なProject Trash
 
 LAN通信は現在TLS 1.2 PSKの実験実装です。署名検証、SAS、Keychain、明示適用は実装済みですが、LAN CA／相互TLS／端末証明書失効が完成するまでUI上でもproduction不可として扱います。
 

@@ -14,6 +14,7 @@ swift --version
 xcrun --sdk macosx --show-sdk-version
 
 Scripts/install_git_hooks.sh
+Vendor/AdobeXMP/Scripts/verify_xcframework.sh
 swift package resolve
 swift test --parallel
 

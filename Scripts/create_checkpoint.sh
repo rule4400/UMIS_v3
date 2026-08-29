@@ -19,6 +19,7 @@ fi
 
 CHECKPOINT_COMMIT=$(git rev-parse HEAD)
 CHECKPOINT_TREE=$(git rev-parse 'HEAD^{tree}')
+Vendor/AdobeXMP/Scripts/verify_xcframework.sh
 swift test --parallel
 if [[ -n "$(git status --porcelain)" || "$(git rev-parse HEAD)" != "${CHECKPOINT_COMMIT}" || \
     "$(git rev-parse 'HEAD^{tree}')" != "${CHECKPOINT_TREE}" ]]; then

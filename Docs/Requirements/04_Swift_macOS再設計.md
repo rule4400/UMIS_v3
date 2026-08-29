@@ -6,7 +6,7 @@
 
 ### 維持するもの
 
-- 取り込み／セレクトの2モード
+- 取り込み／評価・タグの2つの素材ワークスペース
 - 暗色UI、上部モード切替、左sidebar、中央素材領域、右シーン／inspector、下部主操作
 - Photo／Movie／Raw／Audioのcategory filter
 - 4日＋その他のシーン運用
@@ -15,7 +15,7 @@
 - 静止画preview、動画再生、hover scrub、metadata
 - プロジェクト、list管理、除外、cache、履歴
 - 外部メディア検出、安全な取り出し
-- 選別folderへの追加とアーカイブ内シーン移動
+- Adobe互換レーティングとmacOS Finderカラータグ
 
 ### 変更するもの
 
@@ -52,7 +52,7 @@ flowchart TB
     STORE --> VOLUME["VolumeMonitorActor"]
     STORE --> SCAN["ScannerActor"]
     STORE --> INGEST["IngestEngineActor"]
-    STORE --> ARCHIVE["ArchiveEngineActor"]
+    STORE --> METADATA["AssetMetadataActor"]
     STORE --> MEDIA["MediaPipelineActor"]
     STORE --> CACHE["CacheStoreActor"]
     STORE --> AUDIT["AuditStoreActor"]
@@ -78,7 +78,7 @@ RinkanUMISApp
 ├─ WorkspaceWindow
 │  ├─ HeaderView
 │  ├─ ModeSwitcher
-│  ├─ IngestWorkspace / SelectWorkspace
+│  ├─ IngestWorkspace / RatingWorkspace
 │  │  ├─ SidebarView
 │  │  ├─ MediaBrowserRepresentable (NSCollectionView)
 │  │  └─ ScenePanel / InspectorPanel
@@ -99,7 +99,7 @@ RinkanUMISApp
 | `VolumeMonitorActor` | volume lifecycle、stable identity、mount generation、eject state |
 | `ScannerActor` | incremental enumeration、classification、source fingerprint、cancel |
 | `IngestEngineActor` | immutable plan、copy、hash、journal、commit、resume／rollback |
-| `ArchiveEngineActor` | 選別copy、シーン移動、collision、transaction |
+| `AssetMetadataActor` | Adobe XMP Rating、Finderカラー、形式別handler、identity再検証、個別結果 |
 | `RenameEngineActor` | 既存folderのcopy-and-rename／in-place rename、dry-run、rollback |
 | `MediaPipelineActor` | thumbnail、preview、duration、codec、proxy、scrub |
 | `CacheStoreActor` | memory/disk cache、quota、LRU、purge、index |
@@ -323,22 +323,16 @@ extension
 
 previewと実出力は同じpure functionを使用します。path componentはNFC正規化し、空、`.`、`..`、separator、NUL、control、末尾space、過長名を拒否します。`standardizedFileURL`とsymlink解決後にdestination root配下であることを再確認します。case-insensitive／NFC-NFD同一視を含むcollision testを行います。
 
-## 7. SelectとArchive engine
+## 7. 評価・タグとAsset Metadata engine
 
-選別copyもIngest engineと同じverified copy primitiveを再利用します。別の簡易copy実装を作りません。
+旧アプリの「選別」フォルダへの複製とセレクト用シーン移動は、2026-08-29の製品判断でSwift版から削除しました。その代わりに、取り込み済みアーカイブを非破壊で絞り込める次のメタデータ操作を提供します。
 
-シーン移動は次のtransaction planにします。
+1. Adobe XMP Basic `xmp:Rating`のReject（`-1`）、未評価（`0`）、星1〜5
+2. `NSWorkspace`の動的な表示色と、凍結rootから解決したexact file descriptorのFinderInfo label bitによるFinderカラー
+3. 複数選択への一括設定、個別成功／失敗表示、再読込
+4. AdobeとFinderのラベルは別物として保存し、自動相互変換しない
 
-1. 選択assetと対応する選別copyをresolve
-2. 新しい`FilenameComponents`から全destinationを生成
-3. collisionとroot包含を全件preflight
-4. SQLiteへmove intentを記録
-5. 同一filesystemならno-replace rename、別filesystemならverified copy後にsource削除
-6. 本体と選別copyを全件commit
-7. 途中失敗時は逆操作またはresume可能な状態を残す
-8. cache indexを旧URLから新URLへtransaction更新
-
-「その他」も通常のScene IDとして扱い、移動先から除外しません。UIは成功数だけでなく、成功、衝突、失敗、rollback済みを表示します。
+評価対象は取り外し可能メディアと現在の取り込み元を拒否します。スキャン時の各file fingerprint、root device/inode、volume UUIDを保持し、読み書きの直前／直後に再検証します。取り込み、リネーム、カード取り出し／初期化、メタデータ書込は同時実行しません。詳細は`13_評価_Finderカラー_AdobeXMP要件.md`を参照します。
 
 ## 8. Scanner
 
@@ -448,6 +442,10 @@ SwiftDataは最低macOSを14以上へ上げる場合だけ候補にします。�
 ### 12.1 Volume monitor
 
 Disk ArbitrationとNSWorkspace mount notificationを使い、pollを主手段にしません。eventごとにidentity snapshotを作り、同名カードを完全に分けます。
+
+物理カードのscan開始時identityは、結果公開までdestructive capabilityとして公開しません。一方で、非公開のin-flight identityとscan世代を保持し、`disappeared` eventは公開済みidentityとin-flight identityの双方に対して`SourceVolumeID + arrivalGeneration`を照合します。scan結果を採用する直前にはDisk Arbitrationのcurrent identityとmount-session registryを開始時snapshotへ再照合し、ID、挿入世代、全identity証拠digest、canonical mount、scan source ID、root／items走査範囲が一致することを必須とします。予期しない抜去後のmedia pipeline再開では同じ照合をresume前後の両方で行い、後段で変化した場合は直ちに再停止して新しい隔離世代を開始します。非同期待機から戻った旧scanが別のin-flight世代を破棄することを禁止し、identity failure用の隔離世代は最初のawait前に置換します。await後のphase／status更新にもfailure世代と隔離世代の所有権一致を要求します。
+
+media pipelineのsuspend／resumeは単調revisionへ結び付けます。obsolete scanが安全確認のため遅れてsuspendした場合、そのsuspend tokenがなおcurrentで、AppModel上にも新しい隔離、cache消去、review書込み、destructive quarantineが存在しない場合だけ条件付きresumeを許可します。後発所有者のsuspend／resumeでtokenが失効した場合、旧scanはpipeline状態を変更しません。条件付きresumeのactor hop後にもAppModel policyを再評価します。
 
 UI media cardには次を表示します。
 

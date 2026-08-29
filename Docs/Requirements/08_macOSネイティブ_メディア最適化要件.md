@@ -325,7 +325,12 @@ macOSのmemory pressureはDispatch sourceで監視できます。[DispatchSource
 - warm disk hitはscan済みsource fingerprintとcache manifestを先に比較し、毎回source全hashやheader再読を行わない。
 - partial／corrupt cacheは隔離後に再生成する。
 - 「全cache削除」は全kind、SQLite index、memory cacheを含む。
-- cache clear中もcurrent previewを安全に解放する。
+- cache clearは新規source-read受付を先に閉じ、facade受付済みだがqueue投入前のrequestを含む全in-flight処理の終了を待ってからmemory／disk／SQLite indexを消去する。
+- cache clearは成功／失敗ともpipelineを停止したまま返す。開始時と完了時のカード隔離世代／taskがともに存在せず、抜去latchedでも破壊結果quarantineでもない場合だけAppModelが再開する。actor境界後に状態が変われば再停止し、新しい隔離世代だけが次の再開権限を持つ。
+- cache clearはカード隔離世代／taskが開始時からともに存在しない場合だけ許可し、孤立した世代を正常状態として扱わない。
+- cache clear中もcurrent previewを閉じて安全に解放し、処理中の自動カードscan、review、rename、設定変更、LAN同期、監査exportを共通排他gateで保留する。進捗と最終結果は設定画面内に残す。
+- cache使用量の非同期再計測はgenerationでlatest-winsとし、消去前の古い測定を消去後にcommitしない。
+- progressive撮影日時解析中はcache clearを開始しない。metadata coordinatorがreview書込み、抜去隔離等で`.cancelled`を返した場合もmtime fallbackとして成功commitせず、解析全体を中断してplanning境界のfresh再抽出へ委ねる。
 
 ### 9.3 Fingerprint
 
@@ -453,6 +458,10 @@ MainActorの50ms超block、unbounded task増加、cache quota超過、helper残�
 - memory pressure source
 - optional helper timeout／crash／corrupt output
 - disk cache quota／partial recovery
+- cache clear直前にfacade受付済み／queue投入前のrequestが存在しても消去後にcacheを再生成せず、明示的な安全判定までpipelineが停止したままであること
+- cache clear中に新しいカード抜去隔離世代または破壊結果quarantineが発生した場合、読取を再開せず自動カードscanも保留すること
+- progressive撮影日時解析中はcache clearを開始できず、任意のpipeline ownerによるmetadata cancelがmtimeの正常enrichmentとして凍結されないこと。planning時のfresh再抽出結果だけがfreeze条件を満たすこと
+- cache消去前後の使用量再計測が逆順に完了しても、最新generation以外が表示へcommitされないこと
 
 ### UI／Performance
 

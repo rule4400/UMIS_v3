@@ -99,6 +99,8 @@ fi
 
 cd "${PROJECT_DIR}"
 
+"${PROJECT_DIR}/Vendor/AdobeXMP/Scripts/verify_xcframework.sh"
+
 BUILD_ARCH_ARGS=()
 if [[ "${UMIS_UNIVERSAL2:-0}" == "1" ]]; then
     BUILD_ARCH_ARGS=(--arch arm64 --arch x86_64)

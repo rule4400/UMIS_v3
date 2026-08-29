@@ -4,7 +4,7 @@ import UMISCore
 
 enum WorkspaceRoute: String, CaseIterable, Identifiable, Sendable {
     case ingest
-    case select
+    case review
     case rename
     case history
     case settings
@@ -14,7 +14,7 @@ enum WorkspaceRoute: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .ingest: "取り込み"
-        case .select: "セレクト"
+        case .review: "評価・タグ"
         case .rename: "フォルダリネーム"
         case .history: "履歴"
         case .settings: "設定"
@@ -24,7 +24,7 @@ enum WorkspaceRoute: String, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .ingest: "square.and.arrow.down"
-        case .select: "checkmark.rectangle.stack"
+        case .review: "star.square.on.square"
         case .rename: "character.cursor.ibeam"
         case .history: "clock.arrow.circlepath"
         case .settings: "gearshape"
@@ -64,9 +64,11 @@ struct AppAsset: Identifiable, Hashable, Sendable {
     let id: UUID
     let url: URL
     let relativePath: String
-    let byteCount: Int64
-    let modifiedAt: Date
+    var byteCount: Int64
+    var modifiedAt: Date
     let category: AssetCategory
+    let sourceVolumeID: SourceVolumeID
+    var fingerprint: FileFingerprint
 
     var filename: String { url.lastPathComponent }
 
@@ -77,6 +79,8 @@ struct AppAsset: Identifiable, Hashable, Sendable {
         byteCount = coreAsset.byteSize
         modifiedAt = coreAsset.modifiedAt ?? .distantPast
         category = AssetCategory(coreKind: coreAsset.kind)
+        sourceVolumeID = coreAsset.sourceVolumeID
+        fingerprint = coreAsset.fingerprint
     }
 
     init(
@@ -85,7 +89,9 @@ struct AppAsset: Identifiable, Hashable, Sendable {
         relativePath: String,
         byteCount: Int64,
         modifiedAt: Date,
-        category: AssetCategory
+        category: AssetCategory,
+        sourceVolumeID: SourceVolumeID,
+        fingerprint: FileFingerprint
     ) {
         self.id = id
         self.url = url
@@ -93,6 +99,51 @@ struct AppAsset: Identifiable, Hashable, Sendable {
         self.byteCount = byteCount
         self.modifiedAt = modifiedAt
         self.category = category
+        self.sourceVolumeID = sourceVolumeID
+        self.fingerprint = fingerprint
+    }
+
+    func matchesBrowserFilter(searchText: String, category filterCategory: AssetCategory?) -> Bool {
+        let categoryMatches = filterCategory == nil || category == filterCategory
+        let searchMatches = searchText.isEmpty
+            || filename.localizedCaseInsensitiveContains(searchText)
+            || relativePath.localizedCaseInsensitiveContains(searchText)
+        return categoryMatches && searchMatches
+    }
+}
+
+/// Immutable, revisioned input for the asset browser. Filtering is performed only when the source
+/// inventory or filter changes; selection/status updates reuse this snapshot instead of repeatedly
+/// walking every asset from multiple SwiftUI computed properties.
+struct AssetBrowserProjection: Equatable, Sendable {
+    let visibleAssets: [AppAsset]
+    let visibleAssetIDs: Set<UUID>
+    let revision: UInt64
+
+    static let empty = Self(visibleAssets: [], visibleAssetIDs: [], revision: 0)
+
+    static func make(
+        assets: [AppAsset],
+        searchText: String,
+        category: AssetCategory?,
+        revision: UInt64
+    ) -> Self {
+        var visibleAssets: [AppAsset] = []
+        visibleAssets.reserveCapacity(assets.count)
+        var visibleAssetIDs = Set<UUID>()
+        visibleAssetIDs.reserveCapacity(assets.count)
+        for asset in assets where asset.matchesBrowserFilter(
+            searchText: searchText,
+            category: category
+        ) {
+            visibleAssets.append(asset)
+            visibleAssetIDs.insert(asset.id)
+        }
+        return Self(
+            visibleAssets: visibleAssets,
+            visibleAssetIDs: visibleAssetIDs,
+            revision: revision
+        )
     }
 }
 
@@ -147,6 +198,8 @@ struct ActivityRecord: Identifiable, Codable, Sendable {
 /// user name, or backend diagnostic.
 enum SessionActivityAuditCategory: String, Codable, Sendable {
     case copyAndRename
+    /// Decode compatibility for audit exports created before the selection-copy feature was
+    /// removed. New records are never classified into this category.
     case selectionCopy
     case safeEject
     case verifiedIngest
@@ -172,7 +225,6 @@ struct RedactedSessionActivityRecord: Identifiable, Codable, Sendable {
         startedAt = record.startedAt
         category = switch record.title {
         case "フォルダCopy and Rename": .copyAndRename
-        case "選別コピー": .selectionCopy
         case "カード取り出し": .safeEject
         case "検証付き取り込み": .verifiedIngest
         case "取り込み失敗": .ingestFailure

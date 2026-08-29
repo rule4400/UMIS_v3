@@ -71,6 +71,16 @@ public enum MediaMemoryPressureLevel: String, Codable, Sendable {
     case critical
 }
 
+/// Identifies one exact transition into the suspended state. A caller may conditionally undo only
+/// its own transition; any later suspend or resume invalidates the token and therefore wins.
+public struct MediaPipelineSuspensionToken: Hashable, Sendable {
+    fileprivate let revision: UInt64
+
+    fileprivate init(revision: UInt64) {
+        self.revision = revision
+    }
+}
+
 /// macOS-native media facade intended for `NSCollectionView` visible/prefetch tasks.
 ///
 /// Each cell owns the Task returned by its call site and cancels that Task when reused.
@@ -90,6 +100,7 @@ public actor MediaPipeline {
     private let preCoordinatorEnqueueHook: (@Sendable () async -> Void)?
     private var memoryPressureMonitor: MediaMemoryPressureMonitor?
     private var requestsSuspended = false
+    private var suspensionRevision: UInt64 = 0
     private var admittedSourceReadCount = 0
     private var admissionDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -348,7 +359,10 @@ public actor MediaPipeline {
 
     /// Prevents new source reads, cancels all queued work and awaits termination
     /// of work already inside ImageIO, Quick Look or AVFoundation adapters.
-    public func suspendAndAwaitQuiescence() async {
+    @discardableResult
+    public func suspendAndAwaitQuiescence() async -> MediaPipelineSuspensionToken {
+        suspensionRevision &+= 1
+        let token = MediaPipelineSuspensionToken(revision: suspensionRevision)
         requestsSuspended = true
         async let thumbnails: Void = thumbnailCoordinator.cancelAllAndWait()
         async let previews: Void = previewCoordinator.cancelAllAndWait()
@@ -362,10 +376,25 @@ public actor MediaPipeline {
         async let finalPreviews: Void = previewCoordinator.cancelAllAndWait()
         async let finalMetadata: Void = metadataCoordinator.cancelAllAndWait()
         _ = await (finalThumbnails, finalPreviews, finalMetadata)
+        return token
     }
 
     public func resumeRequests() {
+        suspensionRevision &+= 1
         requestsSuspended = false
+    }
+
+    /// Resumes only if no newer pipeline owner has suspended or resumed since `token` was issued.
+    /// This prevents a stale AppModel task from overriding cache clear, metadata mutation, or card
+    /// removal isolation while still allowing it to undo its own late suspension.
+    @discardableResult
+    public func resumeRequests(
+        ifCurrentSuspension token: MediaPipelineSuspensionToken
+    ) -> Bool {
+        guard requestsSuspended, suspensionRevision == token.revision else { return false }
+        suspensionRevision &+= 1
+        requestsSuspended = false
+        return true
     }
 
     func isSuspendedForTesting() -> Bool {
@@ -407,6 +436,17 @@ public actor MediaPipeline {
         await memoryCache.removeAll()
         await metadataCache.removeAll()
         try await diskCache.removeAll()
+    }
+
+    /// Closes source-read admission before clearing so a request already between facade admission
+    /// and coordinator enqueue cannot repopulate memory or disk after the UI reports completion.
+    ///
+    /// The pipeline deliberately remains suspended on both success and failure. Suspension ownership
+    /// is decided by `AppModel`, which must revalidate card-removal and destructive-operation state
+    /// before resuming. Resuming here would be unsafe if a new card isolation started while clearing.
+    public func suspendAndClearCaches() async throws {
+        await suspendAndAwaitQuiescence()
+        try await clearCaches()
     }
 
     public func trimMemory(to byteCount: Int) async {

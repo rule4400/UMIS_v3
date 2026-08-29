@@ -16,9 +16,7 @@ struct IngestWorkspaceView: View {
                     SceneAssignmentView()
                         .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
                         .disabled(
-                            model.phase.isBusy
-                                || model.renameIsBusy
-                                || model.projectOperationInFlight
+                            !model.canStartExclusiveOperation
                         )
                 }
             }
@@ -32,7 +30,7 @@ struct IngestWorkspaceView: View {
                 Button { model.rescan() } label: {
                     Label("再スキャン", systemImage: "arrow.clockwise")
                 }
-                .disabled(model.sourceURL == nil || model.phase.isBusy)
+                .disabled(model.sourceURL == nil || !model.canStartIngestSourceScan)
 
                 Button { model.showInspector.toggle() } label: {
                     Label("シーン", systemImage: "sidebar.right")
@@ -73,7 +71,7 @@ private struct SourceConfigurationView: View {
                     Button("削除…", role: .destructive) {
                         showDeleteProjectConfirmation = true
                     }
-                    .disabled(model.selectedStoredProjectID == nil)
+                    .disabled(!model.canDeleteCurrentStoredProject)
                 }
                 HStack {
                     Button("旧UMIS JSONを移行…") { model.importLegacyProject() }
@@ -84,7 +82,7 @@ private struct SourceConfigurationView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .disabled(model.phase.isBusy || model.renameIsBusy || model.projectOperationInFlight)
+            .disabled(!model.canStartExclusiveOperation)
 
             Section("撮影情報") {
                 TextField("撮影者", text: $model.photographer)
@@ -94,6 +92,7 @@ private struct SourceConfigurationView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            .disabled(!model.canStartExclusiveOperation)
 
             Section("ソース") {
                 PathButton(
@@ -111,6 +110,7 @@ private struct SourceConfigurationView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .disabled(!model.canStartIngestSourceScan)
 
             if model.cardInitializationEnabled {
                 Section("カード初期化") {
@@ -134,6 +134,7 @@ private struct SourceConfigurationView: View {
                     action: model.chooseDestination
                 )
             }
+            .disabled(!model.canStartExclusiveOperation)
 
             if !model.scanErrors.isEmpty {
                 Section("スキャン警告") {
@@ -154,11 +155,10 @@ private struct SourceConfigurationView: View {
                         model.reviewEmptyDirectoryExclusions()
                     }
                 }
+                .disabled(!model.canStartExclusiveOperation)
             }
         }
-        .disabled(model.phase.isBusy || model.renameIsBusy || model.projectOperationInFlight)
         .formStyle(.grouped)
-        .disabled(model.renameIsBusy)
         .sheet(isPresented: $model.showCardEraseConfirmation) {
             CardEraseConfirmationView()
                 .environmentObject(model)
@@ -247,7 +247,7 @@ private struct SceneAssignmentView: View {
                                 )
                                     .textFieldStyle(.plain)
                             }
-                            let count = model.sceneAssignments.values.filter { $0 == scene.id }.count
+                            let count = model.assignmentCount(for: scene.id)
                             Text("\(count)項目")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -275,24 +275,33 @@ private struct SceneAssignmentView: View {
                     .frame(maxWidth: .infinity)
                     .disabled(
                         model.phase.isBusy || model.renameIsBusy
-                            || model.selectedAssetIDs.isEmpty || model.selectedSceneID == nil
+                            || model.visibleSelectedIngestAssetIDs.isEmpty
+                            || model.selectedSceneID == nil
                     )
                 Button("選択素材の割り当てを解除") { model.removeAssignmentsForSelection() }
                     .frame(maxWidth: .infinity)
-                    .disabled(model.phase.isBusy || model.renameIsBusy || model.selectedAssetIDs.isEmpty)
+                    .disabled(
+                        model.phase.isBusy || model.renameIsBusy
+                            || model.visibleSelectedIngestAssetIDs.isEmpty
+                    )
                 Divider()
                 Button("選択素材を今回の取り込みから除外") {
                     model.excludeSelectionFromIngest()
                 }
                 .frame(maxWidth: .infinity)
-                .disabled(model.phase.isBusy || model.renameIsBusy || model.selectedAssetIDs.isEmpty)
+                .disabled(
+                    model.phase.isBusy || model.renameIsBusy
+                        || model.visibleSelectedIngestAssetIDs.isEmpty
+                )
                 Button("選択素材を取り込み対象に戻す") {
                     model.includeSelectionInIngest()
                 }
                 .frame(maxWidth: .infinity)
                 .disabled(
                     model.phase.isBusy || model.renameIsBusy
-                        || model.selectedAssetIDs.isDisjoint(with: model.explicitlyExcludedAssetIDs)
+                        || model.visibleSelectedIngestAssetIDs.isDisjoint(
+                            with: model.explicitlyExcludedAssetIDs
+                        )
                 )
                 if !model.explicitlyExcludedAssetIDs.isEmpty {
                     Button("除外をすべて戻す（\(model.explicitlyExcludedAssetIDs.count)件）") {

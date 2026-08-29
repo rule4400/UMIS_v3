@@ -28,6 +28,7 @@
 11. [10_LANシーン共有_SD管理連携要件.md](10_LANシーン共有_SD管理連携要件.md) — LAN master、TLS同期、Card No解決、VPS gateway／outbox
 12. [11_SD管理システム実装監査_UMIS連携差分.md](11_SD管理システム実装監査_UMIS連携差分.md) — 受領handoffの独立検証、現行実装、重大欠陥、外部API／DB／認証差分
 13. [12_SD管理連携_不足資料_判断チェックリスト.md](12_SD管理連携_不足資料_判断チェックリスト.md) — Card No、Scene authority、状態、fixture、staging／production準備の回答票
+14. [13_評価_Finderカラー_AdobeXMP要件.md](13_評価_Finderカラー_AdobeXMP要件.md) — 選別folder廃止、Adobe Rating、Finderカラー、媒体identity、相互排他、形式別互換性
 
 ## 判定ラベル
 

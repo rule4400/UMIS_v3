@@ -1,0 +1,5 @@
+framework module AdobeXMPBridge {
+    umbrella header "UMISXMPBridge.h"
+    export *
+    module * { export * }
+}

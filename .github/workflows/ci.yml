@@ -27,6 +27,9 @@ jobs:
       - name: Resolve package
         run: swift package resolve
 
+      - name: Verify pinned Adobe XMP binary
+        run: Vendor/AdobeXMP/Scripts/verify_xcframework.sh
+
       - name: Test
         run: swift test --parallel
 

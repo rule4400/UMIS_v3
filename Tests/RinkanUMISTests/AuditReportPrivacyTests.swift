@@ -4,6 +4,14 @@ import XCTest
 import UMISCore
 
 final class AuditReportPrivacyTests: XCTestCase {
+    func testRemovedSelectionCopyCategoryStillDecodesLegacyAuditExports() throws {
+        let legacy = Data(#""selectionCopy""#.utf8)
+        XCTAssertEqual(
+            try JSONDecoder().decode(SessionActivityAuditCategory.self, from: legacy),
+            .selectionCopy
+        )
+    }
+
     func testDefaultReportOmitsHomePathsRawErrorsTitlesAndDetails() throws {
         let homePath = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
         let secretPath = "\(homePath)/CLIENT_SECRET/day1/card-0042.mov"

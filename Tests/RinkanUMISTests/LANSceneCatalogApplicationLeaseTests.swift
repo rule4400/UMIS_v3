@@ -1,9 +1,42 @@
+import Combine
 import Foundation
 import XCTest
 @testable import RinkanUMIS
 
 @MainActor
 final class LANSceneCatalogApplicationLeaseTests: XCTestCase {
+    func testAppModelPublishesLANExclusiveOperationTransitionsForSharedUIAdmission() throws {
+        let model = AppModel()
+        let coordinator = try XCTUnwrap(model.lanSceneCatalog)
+        var observed: [Bool] = []
+        let observation = model.$lanOperationInProgress.sink { observed.append($0) }
+
+        XCTAssertFalse(model.lanOperationInProgress)
+        let token = try coordinator.beginFetchExclusionForTesting()
+        XCTAssertTrue(model.lanOperationInProgress)
+        try coordinator.finishFetchExclusionForTesting(token)
+        XCTAssertFalse(model.lanOperationInProgress)
+        XCTAssertEqual(observed, [false, true, false])
+        withExtendedLifetime(observation) {}
+    }
+
+    func testAppModelPublishesLANStatusForTheCrossWorkspaceStatusBar() throws {
+        let model = AppModel()
+        let coordinator = try XCTUnwrap(model.lanSceneCatalog)
+        var observed: [String] = []
+        let observation = model.$lanStatusMessage.sink { observed.append($0) }
+
+        _ = try coordinator.installReceivedSnapshotForTesting(
+            projectID: UUID(),
+            revision: 42,
+            marker: "status-publication"
+        )
+
+        XCTAssertEqual(model.lanStatusMessage, "debug test candidate revision 42")
+        XCTAssertEqual(observed.last, "debug test candidate revision 42")
+        withExtendedLifetime(observation) {}
+    }
+
     func testFetchExclusionRejectsApplicationAndRoleShutdown() throws {
         let fixture = try makeFixture()
         defer { fixture.remove() }

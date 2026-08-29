@@ -7,11 +7,17 @@ struct MediaPreviewView: View {
     let pipeline: MediaPipeline?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
     @EnvironmentObject private var model: AppModel
     @State private var preview: MediaPreview?
     @State private var player: AVPlayer?
+    @State private var playbackAsset: AVURLAsset?
+    @State private var playbackToken: UUID?
     @State private var errorMessage: String?
     @State private var isLoading = true
+    @State private var loadedPreviewPixelSize: MediaPixelSize?
+
+    private static let mediaPadding: CGFloat = 16
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,25 +42,39 @@ struct MediaPreviewView: View {
 
             Divider()
 
-            ZStack {
-                Color.black.opacity(0.94)
-                if isLoading {
-                    ProgressView("プレビューを準備中…")
-                        .tint(.white)
+            GeometryReader { proxy in
+                let viewportPointSize = CGSize(
+                    width: max(1, proxy.size.width - (Self.mediaPadding * 2)),
+                    height: max(1, proxy.size.height - (Self.mediaPadding * 2))
+                )
+                let requestPixelSize = MediaRequestSizingPolicy.previewPixelSize(
+                    viewportPointSize: viewportPointSize,
+                    backingScaleFactor: displayScale
+                )
+
+                ZStack {
+                    Color.black.opacity(0.94)
+                    if isLoading {
+                        ProgressView("プレビューを準備中…")
+                            .tint(.white)
+                            .foregroundStyle(.white)
+                    } else if let errorMessage {
+                        VStack(spacing: 12) {
+                            Image(systemName: asset.category.systemImage)
+                                .font(.system(size: 42))
+                            Text("プレビューできません")
+                                .font(.headline)
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         .foregroundStyle(.white)
-                } else if let errorMessage {
-                    VStack(spacing: 12) {
-                        Image(systemName: asset.category.systemImage)
-                            .font(.system(size: 42))
-                        Text("プレビューできません")
-                            .font(.headline)
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    } else if let preview {
+                        previewContent(preview)
                     }
-                    .foregroundStyle(.white)
-                } else if let preview {
-                    previewContent(preview)
+                }
+                .task(id: PreviewLoadRequest(assetID: asset.id, pixelSize: requestPixelSize)) {
+                    await loadPreview(pixelSize: requestPixelSize)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -64,13 +84,8 @@ struct MediaPreviewView: View {
                 metadataBar(preview.metadata)
             }
         }
-        .task(id: asset.id) {
-            await loadPreview()
-        }
         .onDisappear {
-            player?.pause()
-            player = nil
-            model.previewPlaybackDidStop(assetID: asset.id)
+            schedulePlaybackTeardown()
         }
     }
 
@@ -80,21 +95,24 @@ struct MediaPreviewView: View {
             VideoPlayer(player: player)
                 .onAppear {
                     if player == nil {
-                        if model.previewPlaybackDidStart(assetID: asset.id) {
-                            player = AVPlayer(url: playback.sourceURL)
+                        if let token = model.previewPlaybackDidStart(assetID: asset.id) {
+                            let sourceAsset = AVURLAsset(url: playback.sourceURL)
+                            playbackAsset = sourceAsset
+                            playbackToken = token
+                            player = AVPlayer(playerItem: AVPlayerItem(asset: sourceAsset))
                         } else {
                             errorMessage = "安全な取り出しまたはカード照合中のため再生を開始できません。"
                         }
                     }
                 }
-                .padding(16)
+                .padding(Self.mediaPadding)
         } else {
             Image(decorative: preview.image.cgImage, scale: 1)
                 .resizable()
                 .interpolation(.high)
                 .antialiased(true)
                 .scaledToFit()
-                .padding(16)
+                .padding(Self.mediaPadding)
         }
     }
 
@@ -120,30 +138,86 @@ struct MediaPreviewView: View {
         .frame(height: 42)
     }
 
-    private func loadPreview() async {
-        isLoading = true
-        errorMessage = nil
-        player?.pause()
-        player = nil
+    private func loadPreview(pixelSize: MediaPixelSize) async {
+        if let loadedPreviewPixelSize,
+           loadedPreviewPixelSize.width >= pixelSize.width,
+           loadedPreviewPixelSize.height >= pixelSize.height {
+            return
+        }
+        // Once playable media owns AVFoundation objects, resizing the window must not interrupt
+        // playback merely to regenerate a poster frame at a different resolution.
+        if preview?.playback?.isPlayable == true { return }
+
+        let isInitialLoad = preview == nil
+        if isInitialLoad {
+            isLoading = true
+            errorMessage = nil
+            await stopPlaybackAndWait()
+        }
         guard let pipeline else {
-            errorMessage = "メディア処理を初期化できませんでした。"
-            isLoading = false
+            if isInitialLoad {
+                errorMessage = "メディア処理を初期化できませんでした。"
+                isLoading = false
+            }
             return
         }
         do {
             let result = try await pipeline.preview(
                 for: asset.url,
-                pixelSize: MediaPixelSize(width: 1_920, height: 1_080),
+                pixelSize: pixelSize,
                 priority: .interactive
             )
             try Task.checkCancellation()
             preview = result
+            loadedPreviewPixelSize = pixelSize
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = error.localizedDescription
+            if isInitialLoad {
+                errorMessage = error.localizedDescription
+            }
         }
-        isLoading = false
+        if isInitialLoad {
+            isLoading = false
+        }
+    }
+
+    @MainActor
+    private func schedulePlaybackTeardown() {
+        let retiringToken = playbackToken
+        detachAndReleasePlaybackObjects()
+        // This task captures only the value-type token. In particular it must not capture an
+        // AVPlayer/AVAsset whose lifetime would extend beyond the quiescence acknowledgement.
+        player = nil
+        playbackAsset = nil
+        playbackToken = nil
+        Task { @MainActor in
+            await model.previewPlaybackObjectsDidRelease(token: retiringToken)
+        }
+    }
+
+    @MainActor
+    private func stopPlaybackAndWait() async {
+        let retiringToken = playbackToken
+        let hadPlaybackObjects = player != nil || playbackAsset != nil
+        detachAndReleasePlaybackObjects()
+        player = nil
+        playbackAsset = nil
+        playbackToken = nil
+        guard retiringToken != nil || hadPlaybackObjects else { return }
+        await model.previewPlaybackObjectsDidRelease(token: retiringToken)
+    }
+
+    /// Performs every synchronous public AVFoundation teardown operation inside one autorelease
+    /// pool. The @State references are set to nil by the caller before any asynchronous suspension.
+    @MainActor
+    private func detachAndReleasePlaybackObjects() {
+        autoreleasepool {
+            player?.pause()
+            player?.cancelPendingPrerolls()
+            player?.replaceCurrentItem(with: nil)
+            playbackAsset?.cancelLoading()
+        }
     }
 
     private static let durationFormatter: DateComponentsFormatter = {
@@ -153,4 +227,9 @@ struct MediaPreviewView: View {
         formatter.zeroFormattingBehavior = .pad
         return formatter
     }()
+}
+
+private struct PreviewLoadRequest: Hashable {
+    let assetID: UUID
+    let pixelSize: MediaPixelSize
 }

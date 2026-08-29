@@ -15,16 +15,23 @@ let package = Package(
         .executable(name: "RinkanUMIS", targets: ["RinkanUMIS"]),
     ],
     targets: [
+        .binaryTarget(
+            name: "AdobeXMPBridge",
+            path: "Vendor/AdobeXMP/AdobeXMPBridge.xcframework"
+        ),
         .systemLibrary(
             name: "CSQLite",
             path: "Sources/CSQLite"
         ),
         .target(
             name: "UMISCore",
-            dependencies: ["CSQLite"],
+            dependencies: ["CSQLite", "AdobeXMPBridge"],
             path: "Sources/UMISCore",
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
+                .linkedLibrary("c++"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("CoreServices"),
                 .linkedFramework("DiskArbitration"),
             ]
         ),
@@ -64,7 +71,10 @@ let package = Package(
         .testTarget(
             name: "UMISCoreTests",
             dependencies: ["UMISCore"],
-            path: "Tests/UMISCoreTests"
+            path: "Tests/UMISCoreTests",
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
         .testTarget(
             name: "UMISMediaTests",
@@ -78,7 +88,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RinkanUMISTests",
-            dependencies: ["RinkanUMIS", "UMISCore"],
+            dependencies: ["RinkanUMIS", "UMISCore", "UMISMedia"],
             path: "Tests/RinkanUMISTests"
         ),
     ],

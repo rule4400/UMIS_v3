@@ -13,7 +13,9 @@ struct SettingsWorkspaceView: View {
             mediaCacheSection
             distributionSection
         }
-        .disabled(model.phase.isBusy || model.renameIsBusy || model.projectOperationInFlight)
+        // Settings is a separate window, so it must participate in the same filesystem/media/LAN
+        // admission boundary as every workspace instead of checking only ingest and rename phases.
+        .disabled(!model.canStartExclusiveOperation)
         .formStyle(.grouped)
         .navigationTitle("設定")
     }
@@ -81,8 +83,21 @@ struct SettingsWorkspaceView: View {
             HStack {
                 Button("再計測") { model.refreshMediaCacheSummary() }
                 Button("すべて消去", role: .destructive) { model.clearMediaCaches() }
-                    .disabled(model.mediaPipeline == nil)
+                    .disabled(!model.canClearMediaCaches)
+                    .help(
+                        model.captureDateMetadataIsLoading
+                            ? "撮影日時の解析完了後に消去できます"
+                            : "表示中のプレビューを閉じ、派生キャッシュをすべて消去します"
+                    )
             }
+            if model.captureDateMetadataIsLoading {
+                Label("撮影日時を解析中のため、キャッシュ消去を保留しています", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text(model.mediaCacheStatusMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("thumbnail、preview、posterとmetadataを同じquota／LRU方針で管理します。原本と取り込み済み素材は削除しません。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
