@@ -1,0 +1,36 @@
+#!/bin/zsh
+set -euo pipefail
+
+MAX_BYTES=$((20 * 1024 * 1024))
+FAILED=0
+
+while IFS= read -r -d '' staged_path; do
+    [[ -z "${staged_path}" ]] && continue
+    case "${staged_path:l}" in
+        .env.example|*/.env.example)
+            ;;
+        *.env|*.env.*|*.p12|*.pfx|*.p8|*.mobileprovision|*.provisionprofile|*.cer|*.key|*.pem|*.db|*.sqlite|*.sqlite3|*.pkg|*.dmg|*.dsym.zip|*.app/*|*.dsym/*|*.xcarchive/*)
+            print -u2 "Refusing potentially sensitive or generated file: ${staged_path}"
+            FAILED=1
+            continue
+            ;;
+    esac
+
+    STAGED_SIZE=$(git cat-file -s ":${staged_path}" 2>/dev/null || print 0)
+    if (( STAGED_SIZE > MAX_BYTES )); then
+        print -u2 "Refusing file larger than 20 MiB without explicit artifact review: ${staged_path}"
+        FAILED=1
+    fi
+
+    if git show ":${staged_path}" 2>/dev/null | LC_ALL=C grep -Ea \
+        -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|(^|[^[:alnum:]_])gh[opusr]_[[:alnum:]_]{20,}|github_pat_[[:alnum:]_]{20,}|(^|[^[:alnum:]])(AKIA|ASIA)[0-9A-Z]{16}|(^|[^[:alnum:]_])xox[baprs]-[[:alnum:]-]{20,}' \
+        >/dev/null; then
+        print -u2 "Refusing file containing a private-key or credential signature: ${staged_path}"
+        FAILED=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if (( FAILED != 0 )); then
+    print -u2 "Commit blocked by the repository safety hook."
+    exit 1
+fi

@@ -1,0 +1,21 @@
+diff --git a/build/shared/ToolchainLLVM.cmake b/build/shared/ToolchainLLVM.cmake
+index 69d632c..de4b7c8 100644
+--- a/build/shared/ToolchainLLVM.cmake
++++ b/build/shared/ToolchainLLVM.cmake
+@@ -17,6 +17,14 @@ set(CMAKE_CXX_COMPILER xcrun -find clang++)
+ set(CMAKE_XCODE_BUILD_SYSTEM 12)
+ 
+ # SDK and deployment
+-set(XMP_OSX_SDK		 	13.1)
+-set(XMP_OSX_TARGET	 	10.15)
++execute_process(
++    COMMAND xcrun --sdk macosx --show-sdk-version
++    OUTPUT_VARIABLE XMP_OSX_SDK
++    OUTPUT_STRIP_TRAILING_WHITESPACE
++    RESULT_VARIABLE XMP_XCRUN_RESULT
++)
++if(NOT XMP_XCRUN_RESULT EQUAL 0 OR XMP_OSX_SDK STREQUAL "")
++    message(FATAL_ERROR "Unable to resolve the active macOS SDK with xcrun")
++endif()
++set(XMP_OSX_TARGET	 	13.0)
+ set(APPLE_UNIVERSAL 	True)

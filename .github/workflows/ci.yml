@@ -15,7 +15,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Toolchain
         run: |
@@ -25,15 +27,27 @@ jobs:
       - name: Resolve package
         run: swift package resolve
 
+      - name: Verify pinned Adobe XMP binary
+        run: Vendor/AdobeXMP/Scripts/verify_xcframework.sh
+
+      - name: Verify privacy manifest
+        run: Scripts/verify_privacy_manifest.sh Resources/PrivacyInfo.xcprivacy
+
+      - name: Record disk-capacity evidence
+        run: |
+          df -h .
+          swift -e 'import Foundation; let url = FileManager.default.temporaryDirectory; let values = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityForOpportunisticUsageKey]); print("temporary=\(url.path) ordinary=\(String(describing: values.volumeAvailableCapacity)) important=\(String(describing: values.volumeAvailableCapacityForImportantUsage)) opportunistic=\(String(describing: values.volumeAvailableCapacityForOpportunisticUsage))")'
+
       - name: Test
         run: swift test --parallel
 
       - name: Release build
-        run: swift build --configuration release
+        run: swift build --configuration release -Xswiftc -warnings-as-errors
 
-      - name: Build local app bundle
+      - name: Build Universal 2 local app bundle
         env:
           UMIS_ALLOW_ADHOC: "1"
+          UMIS_UNIVERSAL2: "1"
         run: Scripts/build_app.sh
 
       - name: Verify app signature
