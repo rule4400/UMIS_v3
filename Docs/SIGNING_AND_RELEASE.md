@@ -1,18 +1,19 @@
 # Developer ID signing and notarized release
 
-更新日: 2026-08-28
+更新日: 2026-08-29
 
 このprojectはMac App Store外配布を前提とし、`Developer ID Application` + Hardened Runtime + Apple公証 + stapled ticketをrelease条件とします。Apple Developer Program登録だけでは署名できません。署名を行うMacのKeychainに、certificateと対応するprivate keyが必要です。
 
 ## 現在の署名／公証構成
 
-2026-08-28のこのMacでの確認結果:
+2026-08-29のこのMacでの確認結果:
 
 - `security find-identity -v -p codesigning`: valid `Developer ID Application` identity 1件
 - Developer Team: `CHECK HOUSE, K.K. (FA43T8UK3P)`
 - certificateに対応するprivate key: login Keychainに導入済み
 - `notarytool` Keychain profile `UMIS_NOTARY`: 登録・認証済み
-- `0.2.0-alpha.3`: Apple Notary Service `Accepted`、ticket staple、Gatekeeper検証済み
+- `0.2.0-alpha.4`: Apple Notary Service `Accepted`、ticket staple、Gatekeeper検証済み
+- 現行`0.2.0-alpha.5` feature build: Developer ID署名済み。review済みtagではないため公証未送信
 
 private key、Apple IDのapp-specific password、notary credentialはKeychainのみに保存し、repository、`.env`、build manifest、DMGには含めません。各releaseが実際に配布可能かどうかは、対応するrelease manifest、notary submission ID／log、stapler／Gatekeeper結果を正本とします。
 
