@@ -182,6 +182,21 @@ struct AssetBrowserView: View {
                         }
                         .disabled(!model.canPresentMediaPreview)
                     }
+                    if sourceURL != nil, allAssets.isEmpty {
+                        HStack {
+                            Button("再スキャン") {
+                                if context == .review { model.rescanReviewSource() }
+                                else { model.rescan() }
+                            }
+                            Button("別のフォルダを選択…") {
+                                if context == .review { model.chooseReviewSource() }
+                                else { model.chooseSource() }
+                            }
+                        }
+                        .disabled(context == .review
+                            ? !model.canStartExclusiveOperation
+                            : !model.canStartIngestSourceScan)
+                    }
                 }
                 .padding(24)
                 Spacer()
@@ -241,7 +256,12 @@ struct AssetBrowserView: View {
         if hasActiveFilter, !allAssets.isEmpty {
             return "現在の絞り込みに一致する素材がありません"
         }
-        return "表示する素材がありません"
+        if context == .ingest, model.phase.failureMessage != nil {
+            return "素材を安全に読み込めませんでした。画面下部の理由と必要な対応をご確認ください"
+        }
+        return context == .review
+            ? "評価に対応する素材が見つかりませんでした。フォルダや読込時の案内をご確認ください"
+            : "対応する素材が見つかりませんでした。フォルダやスキャン警告をご確認ください"
     }
 
     private func setSelectedIDs(_ ids: Set<UUID>) {

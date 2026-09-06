@@ -611,6 +611,7 @@ struct RenameWorkspaceView: View {
 
     private var executionBlockReason: String? {
         if model.renameIsBusy { return "現在の処理が完了するまで実行できません" }
+        if !model.canStartExclusiveOperation { return "別の処理・安全確認が完了するまで実行できません" }
         if model.renamePreviewRows.isEmpty { return "3. 実行前にコピー計画を作成してください" }
         if !model.canExecutePreparedRename { return "入力・出力・命名条件が変わったため、計画の再作成が必要です" }
         return nil

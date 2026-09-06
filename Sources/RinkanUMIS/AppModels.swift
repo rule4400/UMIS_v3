@@ -330,6 +330,11 @@ enum WorkspacePhase: Equatable, Sendable {
         }
     }
 
+    var failureMessage: String? {
+        guard case let .failed(message) = self else { return nil }
+        return message
+    }
+
     /// Item progress is independent of byte size. Unknown totals stay indeterminate, and a stale
     /// or out-of-range callback must never put the native progress bar outside its valid range.
     var progressFraction: Double? {

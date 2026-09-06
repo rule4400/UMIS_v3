@@ -403,6 +403,7 @@ private struct IngestActionBar: View {
 
     private var canBeginIngest: Bool {
         model.includedAssetCount > 0
+            && model.phase.failureMessage == nil
             && model.destinationURL != nil
             && model.unassignedCount == 0
             && model.unreviewedEmptyDirectoryCount == 0
@@ -414,10 +415,17 @@ private struct IngestActionBar: View {
             return "前のスキャンを安全に終了しています。しばらくお待ちください"
         }
         if model.phase.isBusy { return model.phase.label }
+        if model.phase.failureMessage != nil {
+            return "処理が失敗しました。画面下部の理由と必要な対応をご確認ください"
+        }
         if !model.canStartExclusiveOperation {
             return "現在の処理・安全確認の完了を待っています。画面下部の状況をご確認ください"
         }
-        if model.assets.isEmpty { return "撮影カードまたは素材フォルダを選択してください" }
+        if model.assets.isEmpty {
+            return model.sourceURL == nil
+                ? "撮影カードまたは素材フォルダを選択してください"
+                : "対応する素材がありません。再スキャンするか、別のフォルダを選択してください"
+        }
         if model.includedAssetCount == 0 { return "すべての素材が除外されています。必要な素材を取り込み対象に戻してください" }
         if model.destinationURL == nil { return "左側の「保存先」でアーカイブ先を選択してください" }
         if model.unassignedCount > 0 { return "残り\(model.unassignedCount)件をシーンに割り当ててください" }

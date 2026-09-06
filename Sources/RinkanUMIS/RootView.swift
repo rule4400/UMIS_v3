@@ -73,11 +73,23 @@ private struct StatusBarView: View {
                 .help(currentWorkspaceLabel)
             Text("—")
                 .foregroundStyle(.tertiary)
-            Text(currentWorkspaceStatus)
-                .font(.callout)
-                .lineLimit(1)
-                .help(currentWorkspaceStatus)
-                .accessibilityLabel("状況: \(currentWorkspaceStatus)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(currentWorkspaceStatus)
+                    .font(.callout)
+                    .lineLimit(statusRoute == .ingest && model.phase.failureMessage != nil ? 3 : 1)
+                    .help(currentWorkspaceStatus)
+                    .accessibilityLabel("状況と対応: \(currentWorkspaceStatus)")
+                if statusRoute == .ingest,
+                   let reason = model.phase.failureMessage,
+                   reason != currentWorkspaceStatus {
+                    Text("失敗理由: \(reason)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .help(reason)
+                }
+            }
+            .padding(.vertical, 5)
             Spacer()
             if model.reviewMetadataIsWriting, model.route != .review {
                 Button("残りを中止") { model.cancelReviewMetadataWrite() }
@@ -96,7 +108,7 @@ private struct StatusBarView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 34)
+        .frame(minHeight: 34)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
@@ -147,8 +159,6 @@ private struct StatusBarView: View {
         case .ingest:
             if model.ingestScanBoundaryIsRetiring {
                 "前のスキャンがファイルとカードの読み取りを安全に終了するまで待っています"
-            } else if case let .failed(message) = model.phase {
-                message
             } else {
                 model.statusMessage
             }
