@@ -31,10 +31,13 @@ struct IngestWorkspaceView: View {
                     Label("再スキャン", systemImage: "arrow.clockwise")
                 }
                 .disabled(model.sourceURL == nil || !model.canStartIngestSourceScan)
+                .help("ソースを再読み込みします。現在の素材選択と割り当ては再確認が必要です")
 
                 Button { model.showInspector.toggle() } label: {
                     Label("シーン", systemImage: "sidebar.right")
                 }
+                .help(model.showInspector ? "シーンパネルを隠す" : "シーンパネルを表示")
+                .accessibilityLabel(model.showInspector ? "シーンパネルを隠す" : "シーンパネルを表示")
             }
         }
     }
@@ -73,13 +76,13 @@ private struct SourceConfigurationView: View {
                     }
                     .disabled(!model.canDeleteCurrentStoredProject)
                 }
-                HStack {
+                VStack(alignment: .leading, spacing: 6) {
                     Button("旧UMIS JSONを移行…") { model.importLegacyProject() }
                     Button("直前の削除を復旧") { model.recoverLastDeletedProject() }
                         .disabled(!model.canRecoverLastDeletedProject)
                 }
                 Text(model.projectPersistenceStatus)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .disabled(!model.canStartExclusiveOperation)
@@ -88,8 +91,8 @@ private struct SourceConfigurationView: View {
                 TextField("撮影者", text: $model.photographer)
                 TextField("カードNo", text: $model.cardNumber)
                     .onSubmit { model.resolveLocalCardConfiguration() }
-                Text("保存済みのカードNoと一致すると、プロジェクト内の撮影者を安定IDで解決します。")
-                    .font(.caption2)
+                Text("カードNoを入力してReturnを押すと、保存済みの撮影者情報を呼び出します。")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .disabled(!model.canStartExclusiveOperation)
@@ -106,7 +109,7 @@ private struct SourceConfigurationView: View {
                 .disabled(!model.canEjectActiveSource)
                 if let safeEjectAvailabilityMessage = model.safeEjectAvailabilityMessage {
                     Text(safeEjectAvailabilityMessage)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -138,8 +141,22 @@ private struct SourceConfigurationView: View {
 
             if !model.scanErrors.isEmpty {
                 Section("スキャン警告") {
-                    Label("\(model.scanErrors.count)件の読取警告", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                    DisclosureGroup {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(model.scanErrors.enumerated()), id: \.offset) { _, message in
+                                    Text(message)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 180)
+                    } label: {
+                        Label("\(model.scanErrors.count)件の読取警告", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
 
@@ -192,15 +209,31 @@ struct PathButton: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button(action: action) {
-                Label(url == nil ? "選択…" : "変更…", systemImage: "folder")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.caption.weight(.medium))
+                Spacer(minLength: 4)
+                Button(action: action) {
+                    Label(url == nil ? "選択…" : "変更…", systemImage: "folder")
+                }
+                .accessibilityLabel("\(title)を\(url == nil ? "選択" : "変更")")
+                .help("\(title)のフォルダを選択します")
             }
-            Text(url?.path(percentEncoded: false) ?? title)
+            if let url {
+                Text(url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Text(url?.path(percentEncoded: false) ?? "フォルダが選択されていません")
                 .font(.caption)
-                .foregroundStyle(url == nil ? .tertiary : .secondary)
+                .foregroundStyle(.secondary)
                 .lineLimit(3)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
+                .help(url?.path(percentEncoded: false) ?? "選択ボタンで\(title)を指定してください")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -221,6 +254,8 @@ private struct SceneAssignmentView: View {
                     Image(systemName: "plus")
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityLabel("シーンを追加")
+                .help("日付を選んで新しいシーンを追加")
                 .disabled(model.phase.isBusy || model.renameIsBusy)
             }
             .padding(12)
@@ -246,6 +281,7 @@ private struct SceneAssignmentView: View {
                                     )
                                 )
                                     .textFieldStyle(.plain)
+                                    .accessibilityLabel("\(scene.code)のシーン名")
                             }
                             let count = model.assignmentCount(for: scene.id)
                             Text("\(count)項目")
@@ -278,6 +314,13 @@ private struct SceneAssignmentView: View {
                             || model.visibleSelectedIngestAssetIDs.isEmpty
                             || model.selectedSceneID == nil
                     )
+                    .help("選択中の素材を選んだシーンへ割り当て（⌘Return）")
+                if model.visibleSelectedIngestAssetIDs.isEmpty {
+                    Text("中央の素材を選択してから、割り当て先のシーンを選んでください")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Button("選択素材の割り当てを解除") { model.removeAssignmentsForSelection() }
                     .frame(maxWidth: .infinity)
                     .disabled(
@@ -327,17 +370,14 @@ private struct IngestActionBar: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("割り当て済み \(model.assignedCount) / \(model.includedAssetCount)")
+                Text(model.assets.isEmpty
+                    ? "取り込みの準備"
+                    : "割り当て済み \(model.assignedCount) / \(model.includedAssetCount)")
                     .font(.subheadline.monospacedDigit())
-                if model.unassignedCount > 0 {
-                    Text("未割り当て \(model.unassignedCount)件")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                } else if !model.assets.isEmpty {
-                    Text("すべての素材に保存先があります")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
+                Label(readinessMessage, systemImage: canBeginIngest ? "checkmark.circle" : "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(canBeginIngest ? Color.green : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if !model.explicitlyExcludedAssetIDs.isEmpty {
                     Text("利用者確認による明示除外 \(model.explicitlyExcludedAssetIDs.count)件")
                         .font(.caption)
@@ -347,19 +387,41 @@ private struct IngestActionBar: View {
             Spacer()
             if model.canCancelCurrentOperation {
                 Button("中止") { model.cancelCurrentOperation() }
+                    .help("処理中のファイルを安全に完了してから停止します")
             }
             Button("検証付き取り込みを開始") { model.beginVerifiedIngest() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(
-                    model.includedAssetCount == 0
-                        || model.destinationURL == nil
-                        || model.unassignedCount != 0
-                        || model.unreviewedEmptyDirectoryCount != 0
-                        || !model.canStartExclusiveOperation
-                )
+                .disabled(!canBeginIngest)
+                .help(readinessMessage)
         }
         .padding(.horizontal, 16)
-        .frame(height: 70)
+        .padding(.vertical, 12)
+        .frame(minHeight: 78)
+        .background(.bar)
+    }
+
+    private var canBeginIngest: Bool {
+        model.includedAssetCount > 0
+            && model.destinationURL != nil
+            && model.unassignedCount == 0
+            && model.unreviewedEmptyDirectoryCount == 0
+            && model.canStartExclusiveOperation
+    }
+
+    private var readinessMessage: String {
+        if model.ingestScanBoundaryIsRetiring {
+            return "前のスキャンを安全に終了しています。しばらくお待ちください"
+        }
+        if model.phase.isBusy { return model.phase.label }
+        if !model.canStartExclusiveOperation {
+            return "現在の処理・安全確認の完了を待っています。画面下部の状況をご確認ください"
+        }
+        if model.assets.isEmpty { return "撮影カードまたは素材フォルダを選択してください" }
+        if model.includedAssetCount == 0 { return "すべての素材が除外されています。必要な素材を取り込み対象に戻してください" }
+        if model.destinationURL == nil { return "左側の「保存先」でアーカイブ先を選択してください" }
+        if model.unassignedCount > 0 { return "残り\(model.unassignedCount)件をシーンに割り当ててください" }
+        if model.unreviewedEmptyDirectoryCount > 0 { return "左側の「空フォルダ」で残り\(model.unreviewedEmptyDirectoryCount)件をご確認ください" }
+        return "準備が整いました。コピー後に全ファイルの内容を検証します"
     }
 }

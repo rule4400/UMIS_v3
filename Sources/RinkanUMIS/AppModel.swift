@@ -36,7 +36,12 @@ final class AppModel: ObservableObject {
     @Published var assets: [AppAsset] = [] {
         didSet { rebuildIngestAssetProjection(sourceChanged: true) }
     }
-    @Published var selectedAssetIDs: Set<UUID> = []
+    @Published var selectedAssetIDs: Set<UUID> = [] {
+        didSet {
+            guard oldValue != selectedAssetIDs else { return }
+            ingestCollectionSelectionRevision &+= 1
+        }
+    }
     @Published var ingestAssetSearchText = "" {
         didSet {
             guard oldValue != ingestAssetSearchText else { return }
@@ -53,7 +58,12 @@ final class AppModel: ObservableObject {
     @Published var reviewAssets: [AppAsset] = [] {
         didSet { rebuildReviewAssetProjection(sourceChanged: true) }
     }
-    @Published var reviewSelectedAssetIDs: Set<UUID> = []
+    @Published var reviewSelectedAssetIDs: Set<UUID> = [] {
+        didSet {
+            guard oldValue != reviewSelectedAssetIDs else { return }
+            reviewCollectionSelectionRevision &+= 1
+        }
+    }
     @Published var reviewAssetSearchText = "" {
         didSet {
             guard oldValue != reviewAssetSearchText else { return }
@@ -246,6 +256,10 @@ final class AppModel: ObservableObject {
     private(set) var reviewAssetTotalBytes: Int64 = 0
     private(set) var ingestCollectionMetadataRevision: UInt64 = 0
     private(set) var reviewCollectionMetadataRevision: UInt64 = 0
+    /// Lets the AppKit bridge skip an O(selectionCount) reconciliation for unrelated
+    /// `ObservableObject` publications such as per-item ingest progress.
+    private(set) var ingestCollectionSelectionRevision: UInt64 = 0
+    private(set) var reviewCollectionSelectionRevision: UInt64 = 0
     private(set) var sceneNamesByID: [UUID: String] = [:]
     private(set) var sceneAssignmentCountsBySceneID: [UUID: Int] = [:]
     private(set) var assignedIncludedAssetCount = 0

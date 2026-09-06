@@ -16,6 +16,8 @@ struct MediaPreviewView: View {
     @State private var errorMessage: String?
     @State private var isLoading = true
     @State private var loadedPreviewPixelSize: MediaPixelSize?
+    @State private var reloadGeneration = UUID()
+    @AccessibilityFocusState private var accessibilityFocus: PreviewAccessibilityFocus?
 
     private static let mediaPadding: CGFloat = 16
 
@@ -31,12 +33,19 @@ struct MediaPreviewView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("プレビュー中のファイル")
+                .accessibilityValue("\(asset.filename)、\(asset.relativePath)")
+                .help(asset.relativePath)
                 Spacer()
                 Button("Finderで表示") {
                     NSWorkspace.shared.activateFileViewerSelecting([asset.url])
                 }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .help("Finderでこのファイルを表示（⇧⌘R）")
                 Button("閉じる") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .help("プレビューを閉じる（Esc）")
             }
             .padding(14)
 
@@ -60,20 +69,38 @@ struct MediaPreviewView: View {
                             .foregroundStyle(.white)
                     } else if let errorMessage {
                         VStack(spacing: 12) {
-                            Image(systemName: asset.category.systemImage)
-                                .font(.system(size: 42))
-                            Text("プレビューできません")
-                                .font(.headline)
-                            Text(errorMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            VStack(spacing: 12) {
+                                Image(systemName: asset.category.systemImage)
+                                    .font(.system(size: 42))
+                                    .accessibilityHidden(true)
+                                Text("プレビューできません")
+                                    .font(.headline)
+                                Text(errorMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.82))
+                                    .textSelection(.enabled)
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("プレビューエラー")
+                            .accessibilityValue(errorMessage)
+                            .accessibilityFocused($accessibilityFocus, equals: .error)
+
+                            if pipeline != nil {
+                                Button("再試行") { retryPreview() }
+                                    .buttonStyle(.borderedProminent)
+                                    .keyboardShortcut(.defaultAction)
+                            }
                         }
                         .foregroundStyle(.white)
                     } else if let preview {
                         previewContent(preview)
                     }
                 }
-                .task(id: PreviewLoadRequest(assetID: asset.id, pixelSize: requestPixelSize)) {
+                .task(id: PreviewLoadRequest(
+                    assetID: asset.id,
+                    pixelSize: requestPixelSize,
+                    reloadGeneration: reloadGeneration
+                )) {
                     await loadPreview(pixelSize: requestPixelSize)
                 }
             }
@@ -93,6 +120,7 @@ struct MediaPreviewView: View {
     private func previewContent(_ preview: MediaPreview) -> some View {
         if let playback = preview.playback, playback.isPlayable {
             VideoPlayer(player: player)
+                .accessibilityLabel("動画プレビュー、\(asset.filename)")
                 .onAppear {
                     if player == nil {
                         if let token = model.previewPlaybackDidStart(assetID: asset.id) {
@@ -101,13 +129,17 @@ struct MediaPreviewView: View {
                             playbackToken = token
                             player = AVPlayer(playerItem: AVPlayerItem(asset: sourceAsset))
                         } else {
-                            errorMessage = "安全な取り出しまたはカード照合中のため再生を開始できません。"
+                            presentPreviewError("安全な取り出しまたはカード照合中のため再生を開始できません。")
                         }
                     }
                 }
                 .padding(Self.mediaPadding)
         } else {
-            Image(decorative: preview.image.cgImage, scale: 1)
+            Image(
+                preview.image.cgImage,
+                scale: 1,
+                label: Text("画像プレビュー、\(asset.filename)")
+            )
                 .resizable()
                 .interpolation(.high)
                 .antialiased(true)
@@ -134,8 +166,12 @@ struct MediaPreviewView: View {
         }
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("メディア情報")
+        .accessibilityValue(metadataAccessibilityDescription(metadata))
         .padding(.horizontal, 14)
-        .frame(height: 42)
+        .padding(.vertical, 8)
+        .frame(minHeight: 42)
     }
 
     private func loadPreview(pixelSize: MediaPixelSize) async {
@@ -156,7 +192,7 @@ struct MediaPreviewView: View {
         }
         guard let pipeline else {
             if isInitialLoad {
-                errorMessage = "メディア処理を初期化できませんでした。"
+                presentPreviewError("メディア処理を初期化できませんでした。")
                 isLoading = false
             }
             return
@@ -174,12 +210,52 @@ struct MediaPreviewView: View {
             return
         } catch {
             if isInitialLoad {
-                errorMessage = error.localizedDescription
+                presentPreviewError(error.localizedDescription)
             }
         }
         if isInitialLoad {
             isLoading = false
         }
+    }
+
+    @MainActor
+    private func retryPreview() {
+        accessibilityFocus = nil
+        errorMessage = nil
+        preview = nil
+        loadedPreviewPixelSize = nil
+        isLoading = true
+        reloadGeneration = UUID()
+    }
+
+    @MainActor
+    private func presentPreviewError(_ message: String) {
+        errorMessage = message
+        Task { @MainActor in
+            // Wait for the conditional error view to enter the accessibility tree before focusing it.
+            await Task.yield()
+            guard errorMessage == message else { return }
+            accessibilityFocus = .error
+        }
+    }
+
+    private func metadataAccessibilityDescription(_ metadata: MediaMetadata) -> String {
+        var components = [
+            asset.category.rawValue,
+            ByteCountFormatter.string(fromByteCount: asset.byteCount, countStyle: .file),
+        ]
+        if let dimensions = metadata.pixelSize, dimensions.width > 0, dimensions.height > 0 {
+            components.append("幅 \(dimensions.width) ピクセル、高さ \(dimensions.height) ピクセル")
+        }
+        if let duration = metadata.durationSeconds,
+           let formattedDuration = Self.durationFormatter.string(from: duration),
+           !formattedDuration.isEmpty {
+            components.append("再生時間 \(formattedDuration)")
+        }
+        if !metadata.codecs.isEmpty {
+            components.append("コーデック \(metadata.codecs.joined(separator: " / "))")
+        }
+        return components.joined(separator: "、")
     }
 
     @MainActor
@@ -232,4 +308,9 @@ struct MediaPreviewView: View {
 private struct PreviewLoadRequest: Hashable {
     let assetID: UUID
     let pixelSize: MediaPixelSize
+    let reloadGeneration: UUID
+}
+
+private enum PreviewAccessibilityFocus: Hashable {
+    case error
 }

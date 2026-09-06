@@ -66,6 +66,7 @@ enum AssetCollectionKeyboardPolicy {
 struct AssetCollectionUpdateState: Equatable {
     let contentRevision: UInt64
     let metadataRevision: UInt64
+    let selectionRevision: UInt64
     let thumbnailReloadGeneration: UUID?
     let hasMediaPipeline: Bool
 }
@@ -75,6 +76,7 @@ struct AssetCollectionUpdateDecision: Equatable {
     let refreshVisibleMetadata: Bool
     let refreshVisibleThumbnails: Bool
     let refreshNearVisibleThumbnails: Bool
+    let applySelection: Bool
 }
 
 enum AssetCollectionUpdatePolicy {
@@ -89,7 +91,8 @@ enum AssetCollectionUpdatePolicy {
                 rebuildContent: true,
                 refreshVisibleMetadata: true,
                 refreshVisibleThumbnails: false,
-                refreshNearVisibleThumbnails: false
+                refreshNearVisibleThumbnails: false,
+                applySelection: true
             )
         }
 
@@ -104,7 +107,12 @@ enum AssetCollectionUpdatePolicy {
             rebuildContent: rebuildContent,
             refreshVisibleMetadata: refreshVisibleMetadata,
             refreshVisibleThumbnails: refreshThumbnails,
-            refreshNearVisibleThumbnails: refreshThumbnails
+            refreshNearVisibleThumbnails: refreshThumbnails,
+            // Applying AppKit selection walks every requested and selected identifier. Keep that
+            // work off unrelated AppModel publications; a content rebuild restores selection from
+            // the latest parent value after its diffable snapshot has finished applying.
+            applySelection: rebuildContent
+                || previous.selectionRevision != incoming.selectionRevision
         )
     }
 }
@@ -127,6 +135,16 @@ enum AssetCollectionSelectionPolicy {
             select: requestedAvailableIDs.subtracting(actualSelectedIDs),
             deselect: actualSelectedIDs.subtracting(requestedAvailableIDs)
         )
+    }
+
+    /// VoiceOver selection starts from AppKit's actual collection state, just like mouse selection.
+    /// The opened asset is not implicitly made the sole selection, so multi-selection remains usable.
+    static func toggling(_ identifier: UUID, in actualSelectedIDs: Set<UUID>) -> Set<UUID> {
+        var result = actualSelectedIDs
+        if result.remove(identifier) == nil {
+            result.insert(identifier)
+        }
+        return result
     }
 }
 
@@ -221,18 +239,24 @@ private final class PixelAwareCollectionView: NSCollectionView {
 @MainActor
 final class AccessibleAssetCardView: NSView {
     var pressHandler: (() -> Void)?
+    var interactionsAreEnabled = true
 
     override func accessibilityPerformPress() -> Bool {
-        guard let pressHandler else { return false }
+        guard interactionsAreEnabled, let pressHandler else { return false }
         pressHandler()
         return true
     }
 }
 
 struct AssetCollectionView: NSViewRepresentable {
+    @Environment(\.isEnabled) private var interactionsAreEnabled
+
     let assets: [AppAsset]
     /// Must change whenever `assets` or other non-metadata tile content changes.
     let contentRevision: UInt64
+    /// Must change whenever `selectedIDs` changes. A dedicated revision avoids repeatedly walking
+    /// a potentially very large selection when an unrelated `@Published` AppModel value updates.
+    let selectionRevision: UInt64
     let selectedIDs: Set<UUID>
     let excludedIDs: Set<UUID>
     let mediaPipeline: MediaPipeline?
@@ -269,7 +293,8 @@ struct AssetCollectionView: NSViewRepresentable {
         let collectionView = PixelAwareCollectionView()
         collectionView.exactGapLayout = layout
         collectionView.collectionViewLayout = layout
-        collectionView.isSelectable = true
+        collectionView.isSelectable = interactionsAreEnabled
+        collectionView.setAccessibilityEnabled(interactionsAreEnabled)
         collectionView.allowsMultipleSelection = true
         collectionView.backgroundColors = [.clear]
         collectionView.delegate = context.coordinator
@@ -308,7 +333,9 @@ struct AssetCollectionView: NSViewRepresentable {
         context.coordinator.update(
             assets: assets,
             contentRevision: contentRevision,
+            selectionRevision: selectionRevision,
             selectedIDs: selectedIDs,
+            interactionsAreEnabled: interactionsAreEnabled,
             sceneAssignments: sceneAssignments,
             sceneNamesByID: sceneNamesByID,
             excludedIDs: excludedIDs,
@@ -355,6 +382,7 @@ struct AssetCollectionView: NSViewRepresentable {
         private var prefetchTasks: [UUID: PrefetchRequest] = [:]
         private var currentAssetIDs: [UUID] = []
         private var metadataIsLoading = false
+        private var interactionsAreEnabled = true
         private var updateState: AssetCollectionUpdateState?
         private var hasAppliedContentSnapshot = false
         private var contentApplySequence: UInt64 = 0
@@ -400,7 +428,9 @@ struct AssetCollectionView: NSViewRepresentable {
         func update(
             assets: [AppAsset],
             contentRevision: UInt64,
+            selectionRevision: UInt64,
             selectedIDs: Set<UUID>,
+            interactionsAreEnabled: Bool,
             sceneAssignments: [UUID: UUID],
             sceneNamesByID: [UUID: String],
             excludedIDs: Set<UUID>,
@@ -416,9 +446,11 @@ struct AssetCollectionView: NSViewRepresentable {
             thumbnailReloadGeneration: UUID?,
             metadataIsLoading: Bool
         ) {
+            updateInteractionState(interactionsAreEnabled)
             let incomingState = AssetCollectionUpdateState(
                 contentRevision: contentRevision,
                 metadataRevision: metadataRevision,
+                selectionRevision: selectionRevision,
                 thumbnailReloadGeneration: thumbnailReloadGeneration,
                 hasMediaPipeline: parent.mediaPipeline != nil
             )
@@ -459,7 +491,9 @@ struct AssetCollectionView: NSViewRepresentable {
             if decision.refreshNearVisibleThumbnails {
                 refreshNearVisiblePrefetch()
             }
-            applySelection(selectedIDs)
+            if decision.applySelection {
+                applySelection(selectedIDs)
+            }
         }
 
         private func updateMetadataState(
@@ -554,8 +588,47 @@ struct AssetCollectionView: NSViewRepresentable {
                 isReviewContext: parent.isReviewContext,
                 mediaPipeline: parent.mediaPipeline,
                 thumbnailPixelSize: thumbnailPixelSize,
+                interactionsAreEnabled: interactionsAreEnabled,
+                onToggleSelection: { [weak self] in
+                    self?.toggleSelectionFromAccessibility(identifier: identifier) ?? false
+                },
                 onOpen: { [weak self] asset in self?.parent.onOpen(asset) }
             )
+        }
+
+        private func toggleSelectionFromAccessibility(identifier: UUID) -> Bool {
+            guard interactionsAreEnabled,
+                  applyingContentSnapshotSequence == nil,
+                  assetsByID[identifier] != nil,
+                  let collectionView,
+                  let dataSource,
+                  dataSource.indexPath(for: identifier) != nil else { return false }
+            let actualSelectedIDs = Set(collectionView.selectionIndexPaths.compactMap {
+                dataSource.itemIdentifier(for: $0)
+            })
+            let nextSelection = AssetCollectionSelectionPolicy.toggling(
+                identifier,
+                in: actualSelectedIDs
+            )
+            applySelection(nextSelection)
+            parent.onSelectionChange(nextSelection)
+            return true
+        }
+
+        private func updateInteractionState(_ isEnabled: Bool) {
+            let didChange = interactionsAreEnabled != isEnabled
+            interactionsAreEnabled = isEnabled
+            collectionView?.isSelectable = isEnabled
+            collectionView?.setAccessibilityEnabled(isEnabled)
+            guard didChange else { return }
+            collectionView?.visibleItems().forEach {
+                ($0 as? AssetCollectionItem)?.updateInteractionsEnabled(isEnabled)
+            }
+            // AppKit may clear its actual selection when selection is disabled. The model remains
+            // authoritative during the busy interval, so restore it once interaction is allowed.
+            if isEnabled {
+                applySelection(parent.selectedIDs)
+            }
         }
 
         private func reconfigureVisibleItems() {
@@ -605,7 +678,8 @@ struct AssetCollectionView: NSViewRepresentable {
         }
 
         @objc func openDoubleClickedItem(_ recognizer: NSClickGestureRecognizer) {
-            guard recognizer.state == .ended,
+            guard interactionsAreEnabled,
+                  recognizer.state == .ended,
                   let collectionView,
                   let dataSource
             else { return }
@@ -618,7 +692,8 @@ struct AssetCollectionView: NSViewRepresentable {
         }
 
         func openSelectedItem() {
-            guard let collectionView,
+            guard interactionsAreEnabled,
+                  let collectionView,
                   let dataSource,
                   let indexPath = collectionView.selectionIndexPaths.sorted(by: {
                       if $0.section != $1.section { return $0.section < $1.section }
@@ -732,7 +807,8 @@ struct AssetCollectionView: NSViewRepresentable {
         }
 
         private func publishSelection(from collectionView: NSCollectionView) {
-            guard !applyingSelection,
+            guard interactionsAreEnabled,
+                  !applyingSelection,
                   applyingContentSnapshotSequence == nil,
                   let dataSource else { return }
             let identifiers = Set(
@@ -762,6 +838,7 @@ final class AssetCollectionItem: NSCollectionViewItem {
     private let ratingLabel = NSTextField(labelWithString: "")
     private let colorDot = NSView()
     private let metadataErrorIcon = NSImageView()
+    private var selectionAccessibilityAction: NSAccessibilityCustomAction?
     private var thumbnailTask: Task<Void, Never>?
     private var representedURL: URL?
     private var representedRelativePath: String?
@@ -897,6 +974,15 @@ final class AssetCollectionItem: NSCollectionViewItem {
         metadataErrorDetail = nil
         metadataWarningDetail = nil
         card.pressHandler = nil
+        selectionAccessibilityAction = nil
+        view.setAccessibilityCustomActions(nil)
+    }
+
+    deinit {
+        // Removing the collection view (for example when switching workspaces) is not guaranteed
+        // to send every item through `prepareForReuse`. Do not leave an invisible cell subscribed
+        // to a coalesced Quick Look/ImageIO request until that decode happens to finish.
+        thumbnailTask?.cancel()
     }
 
     func configure(
@@ -916,6 +1002,8 @@ final class AssetCollectionItem: NSCollectionViewItem {
         mediaPipeline: MediaPipeline?,
         thumbnailPixelSize: MediaPixelSize = MediaRequestSizingPolicy
             .assetTileThumbnailPixelSize(backingScaleFactor: 2),
+        interactionsAreEnabled: Bool,
+        onToggleSelection: @escaping () -> Bool,
         onOpen: @escaping (AppAsset) -> Void
     ) {
         thumbnailTask?.cancel()
@@ -946,6 +1034,15 @@ final class AssetCollectionItem: NSCollectionViewItem {
             "\(asset.filename)、\(asset.category.rawValue)\(!isReviewContext && isExcluded ? "、取り込み除外" : "")"
         )
         card.pressHandler = { onOpen(asset) }
+        let selectionAction = NSAccessibilityCustomAction(
+            name: "選択を切り替える",
+            handler: { [weak self] in
+                guard self?.card.interactionsAreEnabled == true else { return false }
+                return onToggleSelection()
+            }
+        )
+        selectionAccessibilityAction = selectionAction
+        updateInteractionsEnabled(interactionsAreEnabled)
         updateAccessibilityHelp()
         updateSelectionAppearance()
 
@@ -1050,6 +1147,14 @@ final class AssetCollectionItem: NSCollectionViewItem {
         }
         updateAccessibilityHelp()
         updateSelectionAppearance()
+    }
+
+    func updateInteractionsEnabled(_ isEnabled: Bool) {
+        card.interactionsAreEnabled = isEnabled
+        view.setAccessibilityEnabled(isEnabled)
+        view.setAccessibilityCustomActions(
+            isEnabled ? selectionAccessibilityAction.map { [$0] } : nil
+        )
     }
 
     private func updateSelectionAppearance() {

@@ -11,92 +11,88 @@ struct RatingWorkspaceView: View {
         let finderLabels = workspace.fileLabels
         let finderLabelColors = workspace.fileLabelColors
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("アーカイブの評価とカラータグ")
-                        .font(.title2.weight(.semibold))
-                    Text("星評価は対応形式のAdobe XMPへ埋め込み、カメラRAWは標準XMP sidecarへ保存します。カラーはFinderと双方向で共有します。")
-                        .foregroundStyle(.secondary)
-                    if let sourceURL = model.reviewSourceURL {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("アーカイブの評価とカラータグ")
+                            .font(.title2.weight(.semibold))
+                        Text("星評価は対応形式のAdobe XMPへ埋め込み、カメラRAWは標準XMP sidecarへ保存します。カラーはFinderと双方向で共有します。")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Button("アーカイブを選択…") { model.chooseReviewSource() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(
+                            model.reviewIsScanning
+                                || model.reviewMetadataIsLoading
+                                || model.reviewMetadataIsWriting
+                                || !model.canStartExclusiveOperation
+                        )
+                }
+
+                if let sourceURL = model.reviewSourceURL {
+                    VStack(alignment: .leading, spacing: 5) {
                         Label(sourceURL.path, systemImage: "archivebox")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .help(sourceURL.path)
-                        if let archiveWriteRestriction {
-                            Label(
-                                model.reviewSourceIsReadOnly == nil ? "安全確認不可" : "変更不可",
-                                systemImage: "lock.fill"
-                            )
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .help(archiveWriteRestriction)
-                        }
-                        if let recoveryReason = model.reviewMetadataRecoveryBlockReason {
-                            Label("XMP保護データの復旧確認が必要", systemImage: "externaldrive.badge.exclamationmark")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.red)
-                                .help(recoveryDetail.isEmpty ? recoveryReason : recoveryDetail)
-                        }
-                        if model.reviewUnsupportedRegularFileCount > 0 {
-                            Label(
-                                "未対応形式 \(model.reviewUnsupportedRegularFileCount)件は表示対象外",
-                                systemImage: "doc.badge.ellipsis"
-                            )
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                            .help(unsupportedReviewFilesDetail)
-                        }
-                        if let scanIssueSummary = model.reviewScanIssueStatusSummary {
-                            Label(scanIssueSummary, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
-                                .help(reviewScanIssuesDetail)
-                        }
+                            .textSelection(.enabled)
+                        reviewSourceNotices
                     }
+                } else {
+                    Label(
+                        "評価する取り込み済みアーカイブを選択してください",
+                        systemImage: "archivebox"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                Spacer()
-                if model.reviewMetadataIsLoading || model.reviewMetadataIsWriting {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Button {
-                    model.refreshReviewMetadata()
-                } label: {
-                    Label("メタデータ再読込", systemImage: "arrow.clockwise")
-                }
-                .disabled(
-                    model.reviewAssets.isEmpty
-                        || model.reviewIsScanning
-                        || model.reviewMetadataIsLoading
-                        || model.reviewMetadataIsWriting
-                        || !model.canStartExclusiveOperation
-                )
-                Button {
-                    model.rescanReviewSource()
-                } label: {
-                    Label("フォルダ再スキャン", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .disabled(model.reviewSourceURL == nil || !model.canStartExclusiveOperation)
-                Button("アーカイブを選択…") { model.chooseReviewSource() }
-                    .buttonStyle(.borderedProminent)
+
+                HStack(spacing: 10) {
+                    if model.reviewMetadataIsLoading || model.reviewMetadataIsWriting {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button {
+                        model.refreshReviewMetadata()
+                    } label: {
+                        Label("メタデータ再読込", systemImage: "arrow.clockwise")
+                    }
                     .disabled(
-                        model.reviewIsScanning
+                        model.reviewAssets.isEmpty
+                            || model.reviewIsScanning
                             || model.reviewMetadataIsLoading
                             || model.reviewMetadataIsWriting
                             || !model.canStartExclusiveOperation
                     )
+                    Button {
+                        model.rescanReviewSource()
+                    } label: {
+                        Label("フォルダ再スキャン", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(model.reviewSourceURL == nil || !model.canStartExclusiveOperation)
+                    Spacer()
+                    Text("カードや取り込み途中の保存先には書き込みません")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(16)
             Divider()
             AssetBrowserView(context: .review)
             Divider()
-            VStack(spacing: 8) {
-                HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
                     Text("選択中 \(toolbarState.visibleSelectionCount)件")
-                        .font(.subheadline.monospacedDigit())
+                        .font(.subheadline.monospacedDigit().weight(.medium))
                         .frame(minWidth: 90, alignment: .leading)
+
+                    Text("Adobe XMP評価")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     HStack(spacing: 3) {
                         ratingButton(
@@ -123,8 +119,24 @@ struct RatingWorkspaceView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel("Adobe XMPレーティング")
 
-                    Divider()
-                        .frame(height: 28)
+                    Spacer()
+                    if model.reviewMetadataIsWriting {
+                        Button("残りを中止") {
+                            model.cancelReviewMetadataWrite()
+                        }
+                        .controlSize(.small)
+                        .help("現在処理中のファイルを安全に完了してから、未開始の保存を中止します")
+                        Label("保存中", systemImage: "externaldrive.badge.timemachine")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Text("Finderカラー")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 90, alignment: .leading)
 
                     HStack(spacing: 5) {
                         colorButton(
@@ -147,15 +159,16 @@ struct RatingWorkspaceView: View {
                     .accessibilityLabel("Finderカラー")
 
                     Spacer()
-                    if model.reviewMetadataIsWriting {
-                        Button("残りを中止") {
-                            model.cancelReviewMetadataWrite()
-                        }
-                        .controlSize(.small)
-                        .help("現在処理中のファイルを安全に完了してから、未開始の保存を中止します")
-                        Label("保存中", systemImage: "externaldrive.badge.timemachine")
+                    if let reason = toolbarState.mutationBlockReason {
+                        Label(reason, systemImage: "info.circle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .help(reason)
+                    } else {
+                        Label("選択した素材の変更を安全に保存できます", systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
                     }
                 }
 
@@ -166,20 +179,48 @@ struct RatingWorkspaceView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .help(model.reviewStatusMessage)
                     Spacer()
-                    if let reason = toolbarState.mutationBlockReason,
-                       toolbarState.visibleSelectionCount > 0 {
-                        Text(reason)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .lineLimit(1)
-                    }
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
         }
         .navigationTitle("評価・タグ")
+    }
+
+    @ViewBuilder
+    private var reviewSourceNotices: some View {
+        if let archiveWriteRestriction {
+            Label(
+                model.reviewSourceIsReadOnly == nil ? "安全確認不可" : "変更不可",
+                systemImage: "lock.fill"
+            )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .help(archiveWriteRestriction)
+        }
+        if let recoveryReason = model.reviewMetadataRecoveryBlockReason {
+            Label("XMP保護データの復旧確認が必要", systemImage: "externaldrive.badge.exclamationmark")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+                .help(recoveryDetail.isEmpty ? recoveryReason : recoveryDetail)
+        }
+        if model.reviewUnsupportedRegularFileCount > 0 {
+            Label(
+                "未対応形式 \(model.reviewUnsupportedRegularFileCount)件は表示対象外",
+                systemImage: "doc.badge.ellipsis"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.orange)
+            .help(unsupportedReviewFilesDetail)
+        }
+        if let scanIssueSummary = model.reviewScanIssueStatusSummary {
+            Label(scanIssueSummary, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .help(reviewScanIssuesDetail)
+        }
     }
 
     private var reviewStatusIcon: String {
@@ -373,106 +414,240 @@ struct RenameWorkspaceView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("既存フォルダのCopy and Rename")
-                    .font(.title2.weight(.semibold))
-                Text("元フォルダを変更せず、全出力名と衝突を事前検査してから別フォルダへコピーします。")
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(alignment: .top, spacing: 20) {
-                GroupBox("入力") {
-                    PathButton(title: "既存素材フォルダ", url: model.renameSourceURL, action: model.chooseRenameSource)
-                        .padding(8)
-                }
-                GroupBox("出力") {
-                    PathButton(title: "リネーム済みコピー先", url: model.renameDestinationURL, action: model.chooseRenameDestination)
-                        .padding(8)
-                }
-            }
-            .disabled(!model.canStartExclusiveOperation)
-
-            GroupBox("命名テンプレート") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("テンプレート", text: $model.renameTemplate)
-                        .textFieldStyle(.roundedBorder)
-                    Text("利用可能: {location} {scene} {date} {photographer} {card} {original}")
-                        .font(.caption)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("既存フォルダのCopy and Rename")
+                        .font(.title2.weight(.semibold))
+                    Text("元フォルダのファイル名や内容は変更しません。別の保存先へ、新しい名前で検証付きコピーを作成します。")
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(8)
-            }
-            .disabled(!model.canStartExclusiveOperation)
 
-            GroupBox("安全設定") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("同名出力を実行前に全件検出", systemImage: "checkmark.shield")
-                    Label("一時ファイルへ書込み、SHA-256検証後にatomic commit", systemImage: "checkmark.shield")
-                    Label("元フォルダ内での直接renameは初版では無効", systemImage: "lock.shield")
+                GroupBox("1. 入力フォルダとコピー先") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center, spacing: 12) {
+                            PathButton(
+                                title: "元フォルダ（読み取り元）",
+                                url: model.renameSourceURL,
+                                action: model.chooseRenameSource
+                            )
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .background(Color.secondary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                            Image(systemName: "arrow.right")
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+
+                            PathButton(
+                                title: "コピー先（新規出力）",
+                                url: model.renameDestinationURL,
+                                action: model.chooseRenameDestination
+                            )
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .background(Color.secondary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        Text("入力と出力は別のフォルダを指定します。元データの上書き・移動・削除は行いません。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(8)
-            }
+                .disabled(!model.canStartExclusiveOperation)
 
-            if model.renameIsBusy {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(model.renameStatusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-            } else {
-                Text(model.renameStatusMessage)
-                    .font(.caption)
-                    .foregroundStyle(model.renamePreviewRows.isEmpty ? Color.secondary : Color.green)
-            }
-
-            if !model.renamePreviewRows.isEmpty {
-                Table(model.renamePreviewRows) {
-                    TableColumn("変更前") { row in
-                        Text(row.before)
+                GroupBox("2. 命名条件") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("テンプレート", text: $model.renameTemplate)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("出力ファイル名のテンプレート")
+                        Text("利用可能: {location}  {scene}  {sceneName}  {date}  {photographer}  {card}  {sequence}  {original}")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Text("現在の置換値: \(renameContextSummary)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .help(row.before)
+                            .truncationMode(.tail)
+                            .help(renameContextSummary)
                     }
-                    TableColumn("変更後") { row in
-                        Text(row.after)
-                            .lineLimit(1)
-                            .help(row.after)
-                    }
-                    TableColumn("サイズ") { row in
-                        Text(ByteCountFormatter.string(fromByteCount: row.byteCount, countStyle: .file))
-                            .monospacedDigit()
-                    }
-                    .width(min: 80, ideal: 100, max: 130)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(minHeight: 180)
-            } else {
-                Spacer()
-            }
+                .disabled(!model.canStartExclusiveOperation)
 
-            HStack {
-                Spacer()
-                if model.renameIsBusy {
-                    Button("中止") { model.cancelCurrentOperation() }
-                }
-                Button("計画を作成してプレビュー") {
-                    model.prepareRenamePlan(template: model.renameTemplate)
-                }
-                .disabled(
-                    model.renameSourceURL == nil
-                        || model.renameDestinationURL == nil
-                        || !model.canStartExclusiveOperation
+                Label(
+                    "元ファイルは変更せず、同名衝突を事前に確認し、コピー後に内容が一致するか照合します",
+                    systemImage: "checkmark.shield"
                 )
-                Button("この計画を実行") { model.executePreparedRename() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!model.canExecutePreparedRename)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            GroupBox("3. コピー計画を確認") {
+                if model.renamePreviewRows.isEmpty {
+                    VStack(spacing: 8) {
+                        if model.renameIsBusy {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("出力名と同名衝突、元データに変更がないかを確認中です")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Image(systemName: "tablecells")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.tertiary)
+                            Text("入力と命名条件を確定し「計画を作成」を押すと、変更前後の一覧を表示します。")
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding()
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(
+                            "\(model.renamePreviewRows.count)件の計画を作成済み。実行前にコピー先の名前を確認してください。",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.green)
+                        Table(model.renamePreviewRows) {
+                            TableColumn("元フォルダ内（変更しない）") { row in
+                                Text(row.before)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(row.before)
+                            }
+                            TableColumn("コピー先での名前") { row in
+                                Text(row.after)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(row.after)
+                            }
+                            TableColumn("サイズ") { row in
+                                Text(ByteCountFormatter.string(fromByteCount: row.byteCount, countStyle: .file))
+                                    .monospacedDigit()
+                            }
+                            .width(min: 80, ideal: 100, max: 130)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+
+            Divider()
+            renameActionBar
         }
-        .padding(20)
         .navigationTitle("フォルダリネーム")
+    }
+
+    private var renameActionBar: some View {
+        HStack(spacing: 12) {
+            if model.renameIsBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(renameDisplayStatus)
+                    .font(.caption)
+                    .foregroundStyle(renameStatusColor)
+                    .lineLimit(1)
+                    .help(renameDisplayStatus)
+                if let reason = nextActionBlockReason {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(reason)
+                }
+            }
+            Spacer(minLength: 12)
+            if model.renameIsBusy, model.canCancelCurrentOperation {
+                Button("安全に中止") { model.cancelCurrentOperation() }
+                    .help("現在のファイル境界で停止し、ロールバックまたは復旧状態を履歴に記録します")
+            }
+            Button("3. 計画を作成") {
+                model.prepareRenamePlan(template: model.renameTemplate)
+            }
+            .disabled(planCreationBlockReason != nil)
+            .help(planCreationBlockReason ?? "出力名と同名衝突、元データの変更有無を確認し、実行せずに一覧を作成します")
+            Button("4. 検証付きコピーを実行") { model.executePreparedRename() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!model.canExecutePreparedRename)
+                .help(executionBlockReason ?? "表示中の計画を再検証し、別フォルダへコピーします")
+        }
+        .padding(.horizontal, 20)
+        .frame(minHeight: 66)
+        .background(.bar)
+    }
+
+    private var templateIsPresent: Bool {
+        !model.renameTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var planCreationBlockReason: String? {
+        if model.renameIsBusy { return "現在の計画またはコピー処理の完了を待ってください" }
+        if !model.canStartExclusiveOperation { return "別の操作が完了するまで計画を作成できません" }
+        if model.renameSourceURL == nil { return "1. 元フォルダを選択してください" }
+        if model.renameDestinationURL == nil { return "1. コピー先フォルダを選択してください" }
+        if !templateIsPresent { return "2. 命名テンプレートを入力してください" }
+        return nil
+    }
+
+    private var executionBlockReason: String? {
+        if model.renameIsBusy { return "現在の処理が完了するまで実行できません" }
+        if model.renamePreviewRows.isEmpty { return "3. 実行前にコピー計画を作成してください" }
+        if !model.canExecutePreparedRename { return "入力・出力・命名条件が変わったため、計画の再作成が必要です" }
+        return nil
+    }
+
+    private var nextActionBlockReason: String? {
+        model.canExecutePreparedRename ? nil : planCreationBlockReason ?? executionBlockReason
+    }
+
+    private var renameStatusColor: Color {
+        if model.renameIsBusy { return .secondary }
+        if model.canExecutePreparedRename { return .green }
+        return .secondary
+    }
+
+    private var renameDisplayStatus: String {
+        model.renameStatusMessage
+            .replacingOccurrences(of: "内容fingerprint", with: "元データの変更有無")
+            .replacingOccurrences(of: "SHA-256検証", with: "コピー後の内容照合")
+    }
+
+    private var renameContextSummary: String {
+        let scene = model.selectedSceneID.flatMap { selectedID in
+            model.scenes.first { $0.id == selectedID }
+        }
+        let values = [
+            "会場 \(displayValue(model.locationName))",
+            "シーン \(scene.map { "\($0.code) \($0.name)" } ?? "未設定")",
+            "撮影者 \(displayValue(model.photographer))",
+            "カードNo \(displayValue(model.cardNumber))",
+        ]
+        return values.joined(separator: " ・ ")
+    }
+
+    private func displayValue(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "未設定" : trimmed
     }
 }
 
@@ -481,17 +656,49 @@ struct HistoryWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("操作履歴")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                Button("再読み込み") { model.refreshOperationHistory() }
-                Button("匿名化監査レポートを書き出す…") { model.exportActivityReport() }
-                    .disabled(
-                        (model.activity.isEmpty && model.operationHistory.isEmpty)
-                            || !model.canStartExclusiveOperation
-                    )
-                    .help("監査payload、フルパス、ホームフォルダ名、生のエラー詳細は書き出しません")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("操作履歴")
+                            .font(.title2.weight(.semibold))
+                        Text("永続履歴 \(model.operationHistory.count)件 ・ この起動中 \(model.activity.count)件")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        model.refreshOperationHistory()
+                    } label: {
+                        Label("再読み込み", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        model.exportActivityReport()
+                    } label: {
+                        Label("匿名化監査レポートを書き出す…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(auditExportBlockReason != nil)
+                    .help(auditExportBlockReason ?? "フルパス、ホームフォルダ名、詳細なエラー内容を除いて書き出します")
+                }
+
+                HStack(spacing: 8) {
+                    if model.auditExportInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: historyStatusIcon)
+                            .foregroundStyle(historyStatusColor)
+                    }
+                    Text(model.historyStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .help(model.historyStatusMessage)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Label("書き出し時は個人を特定し得る情報を除外", systemImage: "hand.raised.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(16)
             Divider()
@@ -501,7 +708,7 @@ struct HistoryWorkspaceView: View {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 40))
                         .foregroundStyle(.tertiary)
-                    Text(model.historyStatusMessage)
+                    Text("操作履歴はまだありません")
                         .foregroundStyle(.secondary)
                     Text("成功・失敗・中止・検証結果をすべてここへ記録します。")
                         .font(.caption)
@@ -521,18 +728,27 @@ struct HistoryWorkspaceView: View {
                                         Text(operation.id.uuidString.lowercased())
                                             .font(.caption.monospaced())
                                             .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .textSelection(.enabled)
                                     }
                                     Spacer()
-                                    Text(operation.updatedAt, format: .dateTime.month().day().hour().minute())
+                                    Text(operation.updatedAt, format: .dateTime.year().month().day().hour().minute())
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     if model.canResumeOperation(operation) {
                                         Button("再開を検証…") { model.resumeOperation(operation) }
                                             .disabled(!model.canStartExclusiveOperation)
+                                            .help(
+                                                model.canStartExclusiveOperation
+                                                    ? "同一カード・同一挿入・同一計画を再確認し、一致した場合だけ再開します"
+                                                    : "実行中の操作が完了するまで再開を確認できません"
+                                            )
                                     } else if operation.status == .recoveryRequired {
-                                        Text("要手動確認")
+                                        Label("要手動確認", systemImage: "person.crop.circle.badge.exclamationmark")
                                             .font(.caption.weight(.semibold))
                                             .foregroundStyle(.orange)
+                                            .help("自動再開は行いません。元データと保存先を手動で確認してください")
                                     }
                                 }
                             }
@@ -553,9 +769,11 @@ struct HistoryWorkspaceView: View {
                                         Text(record.detail)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                            .help(record.detail)
                                     }
                                     Spacer()
-                                    Text(record.startedAt, format: .dateTime.month().day().hour().minute())
+                                    Text(record.startedAt, format: .dateTime.year().month().day().hour().minute())
                                         .font(.caption)
                                 }
                             }
@@ -566,6 +784,34 @@ struct HistoryWorkspaceView: View {
         }
         .navigationTitle("履歴")
         .onAppear { model.refreshOperationHistory() }
+    }
+
+    private var auditExportBlockReason: String? {
+        if model.activity.isEmpty && model.operationHistory.isEmpty {
+            return "書き出す操作履歴がありません"
+        }
+        if model.auditExportInFlight {
+            return "監査レポートを書き出し中です"
+        }
+        if !model.canStartExclusiveOperation {
+            return "実行中の操作が完了するまで書き出せません"
+        }
+        return nil
+    }
+
+    private var historyStatusIcon: String {
+        let message = model.historyStatusMessage
+        if message.contains("失敗") || message.contains("信頼できません") {
+            return "exclamationmark.triangle.fill"
+        }
+        if model.operationHistory.isEmpty {
+            return "clock"
+        }
+        return "checkmark.circle"
+    }
+
+    private var historyStatusColor: Color {
+        historyStatusIcon == "exclamationmark.triangle.fill" ? .orange : .secondary
     }
 
     private func icon(for state: ActivityRecord.State) -> String {

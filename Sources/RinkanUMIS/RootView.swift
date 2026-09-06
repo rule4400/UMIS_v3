@@ -8,9 +8,11 @@ struct RootView: View {
             List(WorkspaceRoute.allCases, selection: $model.route) { route in
                 Label(route.title, systemImage: route.systemImage)
                     .tag(route)
+                    .padding(.vertical, 3)
             }
             .navigationTitle("RINKAN UMIS")
-            .frame(minWidth: 176)
+            .navigationSplitViewColumnWidth(min: 176, ideal: 190, max: 240)
+            .accessibilityLabel("作業画面")
         } detail: {
             switch model.route {
             case .ingest:
@@ -45,17 +47,37 @@ private struct StatusBarView: View {
     var body: some View {
         HStack(spacing: 10) {
             if currentWorkspaceIsBusy {
-                ProgressView()
-                    .controlSize(.small)
+                if statusRoute == .ingest, let progress = model.phase.progressFraction {
+                    ProgressView(value: progress)
+                        .frame(width: 90)
+                        .accessibilityLabel(model.phase.label)
+                        .accessibilityValue("\(Int(progress * 100))パーセント")
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(currentWorkspaceLabel)
+                }
+            } else if statusRoute == .ingest, case .failed = model.phase {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .accessibilityHidden(true)
+            } else if statusRoute == .ingest, model.phase == .completed {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .accessibilityHidden(true)
             }
             Text(currentWorkspaceLabel)
-                .font(.caption)
+                .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(currentWorkspaceLabel)
             Text("—")
                 .foregroundStyle(.tertiary)
             Text(currentWorkspaceStatus)
-                .font(.caption)
+                .font(.callout)
                 .lineLimit(1)
+                .help(currentWorkspaceStatus)
+                .accessibilityLabel("状況: \(currentWorkspaceStatus)")
             Spacer()
             if model.reviewMetadataIsWriting, model.route != .review {
                 Button("残りを中止") { model.cancelReviewMetadataWrite() }
@@ -74,7 +96,7 @@ private struct StatusBarView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 28)
+        .frame(height: 34)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
@@ -99,7 +121,9 @@ private struct StatusBarView: View {
     private var currentWorkspaceLabel: String {
         let label = switch statusRoute {
         case .ingest:
-            model.ingestScanBoundaryIsRetiring ? "スキャン終了待機中" : model.phase.label
+            if model.ingestScanBoundaryIsRetiring { "スキャン終了待機中" }
+            else if case .failed = model.phase { "処理に失敗" }
+            else { model.phase.label }
         case .review:
             if model.reviewIsScanning { "読込中" }
             else if model.reviewMetadataIsWriting { "保存中" }
@@ -121,9 +145,13 @@ private struct StatusBarView: View {
     private var currentWorkspaceStatus: String {
         switch statusRoute {
         case .ingest:
-            model.ingestScanBoundaryIsRetiring
-                ? "旧スキャンのファイル・媒体読取境界が閉じるまで待っています"
-                : model.statusMessage
+            if model.ingestScanBoundaryIsRetiring {
+                "前のスキャンがファイルとカードの読み取りを安全に終了するまで待っています"
+            } else if case let .failed(message) = model.phase {
+                message
+            } else {
+                model.statusMessage
+            }
         case .review: model.reviewStatusMessage
         case .rename: model.renameStatusMessage
         case .history: model.historyStatusMessage

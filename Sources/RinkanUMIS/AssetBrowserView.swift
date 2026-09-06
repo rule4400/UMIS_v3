@@ -7,6 +7,7 @@ enum AssetBrowserContext: Equatable, Sendable {
 
 struct AssetBrowserView: View {
     @EnvironmentObject private var model: AppModel
+    @FocusState private var searchIsFocused: Bool
     let context: AssetBrowserContext
 
     init(context: AssetBrowserContext = .ingest) {
@@ -74,6 +75,14 @@ struct AssetBrowserView: View {
         currentCategory != nil || !currentSearchText.isEmpty
     }
 
+    private var canFocusSearch: Bool {
+        model.canPresentMediaPreview
+            && model.previewAsset == nil
+            && !model.showAssetExclusionConfirmation
+            && !model.showEmptyDirectoryExclusionConfirmation
+            && !model.showCardEraseConfirmation
+    }
+
     var body: some View {
         let projection = browserProjection
         let filteredAssets = projection.visibleAssets
@@ -81,8 +90,12 @@ struct AssetBrowserView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 TextField("ファイル名・フォルダを検索", text: searchText)
                     .textFieldStyle(.roundedBorder)
+                    .focused($searchIsFocused)
+                    .accessibilityLabel("素材をファイル名またはフォルダ名で検索")
+                    .help("ファイル名・フォルダ名で絞り込み（⌘F）")
                 Picker("種類", selection: category) {
                     Text("すべて").tag(AssetCategory?.none)
                     ForEach(AssetCategory.allCases, id: \.self) { item in
@@ -99,18 +112,35 @@ struct AssetBrowserView: View {
                     .labelStyle(.iconOnly)
                     .help("検索とカテゴリの絞り込みを解除")
                 }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 42)
+            .disabled(!model.canPresentMediaPreview)
+
+            HStack(spacing: 8) {
                 Text("表示 \(filteredAssets.count) / 全 \(allAssets.count)")
-                    .font(.caption.monospacedDigit())
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
+                if !selectedIDs.isEmpty {
+                    Text("選択 \(selectedIDs.count)")
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .accessibilityLabel("\(selectedIDs.count)項目を選択中")
+                }
+                Spacer(minLength: 4)
                 Button("表示中を選択") {
                     setSelectedIDs(projection.visibleAssetIDs)
                 }
                 .disabled(filteredAssets.isEmpty)
+                .help("絞り込み後の表示中の素材をすべて選択（⌘A）")
                 Button("選択解除") { setSelectedIDs([]) }
                     .disabled(selectedIDs.isEmpty)
             }
+            .font(.caption)
+            .controlSize(.small)
             .padding(.horizontal, 10)
-            .frame(height: 42)
+            .padding(.bottom, 8)
+            .disabled(!model.canPresentMediaPreview)
 
             Divider()
 
@@ -126,17 +156,42 @@ struct AssetBrowserView: View {
                         .foregroundStyle(.tertiary)
                     Text(emptyStateMessage)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if sourceURL == nil {
+                        Button(context == .review ? "アーカイブを選択…" : "撮影カード／フォルダを選択…") {
+                            if context == .review {
+                                model.chooseReviewSource()
+                            } else {
+                                model.chooseSource()
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(context == .review
+                            ? !model.canStartExclusiveOperation
+                            : !model.canStartIngestSourceScan)
+                        Text(context == .review
+                            ? "取り込み済みの素材に星評価とFinderカラーを付けられます"
+                            : "フォルダをこの画面へドラッグして読み込むこともできます")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
                     if sourceURL != nil, hasActiveFilter, !allAssets.isEmpty {
                         Button("絞り込みを解除") {
                             clearFilters()
                         }
+                        .disabled(!model.canPresentMediaPreview)
                     }
                 }
+                .padding(24)
                 Spacer()
             } else {
                 AssetCollectionView(
                     assets: filteredAssets,
                     contentRevision: projection.revision,
+                    selectionRevision: context == .review
+                        ? model.reviewCollectionSelectionRevision
+                        : model.ingestCollectionSelectionRevision,
                     selectedIDs: selectedIDs,
                     excludedIDs: context == .ingest ? model.explicitlyExcludedAssetIDs : [],
                     mediaPipeline: model.mediaPipeline,
@@ -161,9 +216,12 @@ struct AssetBrowserView: View {
                     onSelectionChange: setSelectedIDs,
                     onOpen: model.presentPreview
                 )
+                .disabled(!model.canPresentMediaPreview)
             }
         }
-        .disabled(!model.canPresentMediaPreview)
+        .focusedSceneValue(\.umisSearchAction, canFocusSearch ? {
+            searchIsFocused = true
+        } : nil)
         .onChange(of: projection.revision) { _ in
             // A hidden selection must never receive a scene assignment or metadata mutation by
             // surprise. Filtering therefore narrows the active selection to what is still visible.

@@ -790,8 +790,11 @@ final class AssetReviewSafetyTests: XCTestCase {
             metadataWarningMessage: "Adobe sidecar互換性は未検証",
             metadataIsLoading: false,
             isReviewContext: true,
-            mediaPipeline: nil
-        ) { openedAssetID = $0.id }
+            mediaPipeline: nil,
+            interactionsAreEnabled: true,
+            onToggleSelection: { true },
+            onOpen: { openedAssetID = $0.id }
+        )
 
         XCTAssertTrue(item.view.accessibilityPerformPress())
         XCTAssertEqual(openedAssetID, asset.id)

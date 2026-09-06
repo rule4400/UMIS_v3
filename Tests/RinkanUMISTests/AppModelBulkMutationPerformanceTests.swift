@@ -6,6 +6,32 @@ import UMISCore
 
 @MainActor
 final class AppModelBulkMutationPerformanceTests: XCTestCase {
+    func testSelectionRevisionChangesOnlyWhenSelectionContentChanges() {
+        let model = AppModel()
+        let first = UUID()
+        let second = UUID()
+        let initialIngestRevision = model.ingestCollectionSelectionRevision
+        let initialReviewRevision = model.reviewCollectionSelectionRevision
+
+        model.selectedAssetIDs = [first, second]
+        XCTAssertEqual(model.ingestCollectionSelectionRevision, initialIngestRevision &+ 1)
+        model.selectedAssetIDs = [second, first]
+        XCTAssertEqual(
+            model.ingestCollectionSelectionRevision,
+            initialIngestRevision &+ 1,
+            "assigning the same large logical selection must not trigger reconciliation"
+        )
+        model.selectedAssetIDs.remove(first)
+        XCTAssertEqual(model.ingestCollectionSelectionRevision, initialIngestRevision &+ 2)
+
+        model.reviewSelectedAssetIDs = [first]
+        XCTAssertEqual(model.reviewCollectionSelectionRevision, initialReviewRevision &+ 1)
+        model.reviewSelectedAssetIDs = [first]
+        XCTAssertEqual(model.reviewCollectionSelectionRevision, initialReviewRevision &+ 1)
+        model.reviewSelectedAssetIDs.removeAll()
+        XCTAssertEqual(model.reviewCollectionSelectionRevision, initialReviewRevision &+ 2)
+    }
+
     func testTwentyThousandSceneAssignmentsPublishAndReviseOncePerBatch() {
         let model = AppModel()
         let assetIDs = Set((0 ..< 20_000).map { _ in UUID() })

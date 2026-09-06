@@ -312,7 +312,7 @@ enum WorkspacePhase: Equatable, Sendable {
         switch self {
         case .idle: "待機中"
         case .scanning: "素材をスキャン中"
-        case .ready: "準備完了"
+        case .ready: "素材を読み込み済み"
         case .planning: "コピー計画を確認中"
         case let .copying(completed, total): "コピー中 \(completed) / \(total)"
         case let .verifying(completed, total): "検証中 \(completed) / \(total)"
@@ -327,6 +327,18 @@ enum WorkspacePhase: Equatable, Sendable {
         switch self {
         case .scanning, .planning, .copying, .verifying, .ejectingCard, .erasingCard: true
         default: false
+        }
+    }
+
+    /// Item progress is independent of byte size. Unknown totals stay indeterminate, and a stale
+    /// or out-of-range callback must never put the native progress bar outside its valid range.
+    var progressFraction: Double? {
+        switch self {
+        case let .copying(completed, total), let .verifying(completed, total):
+            guard total > 0 else { return nil }
+            return min(1, max(0, Double(completed) / Double(total)))
+        default:
+            return nil
         }
     }
 }
