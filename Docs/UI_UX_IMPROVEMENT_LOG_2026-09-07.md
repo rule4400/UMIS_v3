@@ -38,14 +38,26 @@
 - 最終AXガード追加後の影響範囲検証: `AssetCollectionPerformancePolicyTests` 17件成功。大文字小文字APFSの環境条件確認1件skip、失敗0。
 - 独立レビューの対応指示・失敗状態・空状態修正後、`swift test --parallel`を再実行: 293項目構成、終了コード0。
 - `Vendor/AdobeXMP/Scripts/verify_xcframework.sh`: 成功、arm64/x86_64両sliceの同梱物を検証。
-- `swift build --configuration release -Xswiftc -warnings-as-errors`: 成功。最終成果物作成前にも再実行する。
+- `swift build --configuration release -Xswiftc -warnings-as-errors`: 最終ソースコミット`1c079e9`でも成功。
 - `git diff --check`: 成功。
+
+## ビルド成果物
+
+- 最終ソースコミット: `1c079e9cfd2ea0c48eda8152772bdd3b8a1434c4`。
+- 主変更コミット: `f3b509c`、独立レビュー修正コミット: `1c079e9`。
+- アプリ: `dist/UI-QA-20260907/RINKAN UMIS.app`。
+- ビルドマニフェスト: `dist/UI-QA-20260907/manifests/build-0.2.0-alpha.5-13-20260906T213154Z.txt`。
+- build 13、macOS 13以降、Universal 2（`x86_64 arm64`）。両architectureのコンパイル・リンク成功。
+- ビルド時の作業ツリーはclean。実行ファイルSHA-256: `13017ec2b823289c4593eecdec0e90a1332b8582269b3c7a9be298e0ecf4b8d2`。
+- `codesign --verify --all-architectures --deep --strict`による独立再検証成功。
+- ローカル検証用ad-hoc署名。Apple Developer ID署名・公証・配布用DMGは今回作成していない。既存の公証済み配布物は保持。
+- Intel実機での起動、変更後の実画面、VoiceOverの操作通し試験は未実施。
 
 ## 次の検証
 
-1. ソースをコミットし、最終Releaseビルドと既存配布物とは別の場所へのUniversal 2検証用アプリビルド。
+1. GitHubの`feature/ui-ux-20260907`へバックアップし、実行されるCIを確認する。
 2. 実画面が利用可能なら、最小ウィンドウ・通常ウィンドウ、空状態、検索ゼロ件、複数選択、プレビュー再試行、長い日本語パスを確認。
-3. アプリの保存先・署名検証・残課題を本書へ追記。
+3. 夜間の次回作業では、本書の残課題から有用な変更を選び、実装前に安全上の不変条件と検証方法を定める。
 
 ## 残る評価対象
 
