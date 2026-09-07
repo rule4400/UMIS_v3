@@ -18,7 +18,7 @@ struct RatingWorkspaceView: View {
                             .font(.title2.weight(.semibold))
                         Text("星評価は対応形式のAdobe XMPへ埋め込み、カメラRAWは標準XMP sidecarへ保存します。カラーはFinderと双方向で共有します。")
                             .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(3)
                     }
                     Spacer(minLength: 12)
                     Button("アーカイブを選択…") { model.chooseReviewSource() }
@@ -186,6 +186,42 @@ struct RatingWorkspaceView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
         }
+        .focusedSceneValue(
+            \.umisRatingCommandContext,
+            UMISRatingCommandContext(
+                mutationBlockReason: (
+                    model.previewAsset != nil
+                        || model.showAssetExclusionConfirmation
+                        || model.showEmptyDirectoryExclusionConfirmation
+                        || model.showCardEraseConfirmation
+                )
+                    ? "プレビューまたは確認画面を閉じてから評価を変更してください"
+                    : model.reviewMutationBlockReason,
+                canRefreshMetadata: !model.reviewAssets.isEmpty
+                    && !model.reviewIsScanning
+                    && !model.reviewMetadataIsLoading
+                    && !model.reviewMetadataIsWriting
+                    && model.canStartExclusiveOperation
+                    && model.previewAsset == nil
+                    && !model.showAssetExclusionConfirmation
+                    && !model.showEmptyDirectoryExclusionConfirmation
+                    && !model.showCardEraseConfirmation,
+                applyRating: { rating in
+                    guard model.previewAsset == nil,
+                          !model.showAssetExclusionConfirmation,
+                          !model.showEmptyDirectoryExclusionConfirmation,
+                          !model.showCardEraseConfirmation else { return }
+                    model.applyReviewRating(rating)
+                },
+                refreshMetadata: {
+                    guard model.previewAsset == nil,
+                          !model.showAssetExclusionConfirmation,
+                          !model.showEmptyDirectoryExclusionConfirmation,
+                          !model.showCardEraseConfirmation else { return }
+                    model.refreshReviewMetadata()
+                }
+            )
+        )
         .navigationTitle("評価・タグ")
     }
 
@@ -421,7 +457,7 @@ struct RenameWorkspaceView: View {
                         .font(.title2.weight(.semibold))
                     Text("元フォルダのファイル名や内容は変更しません。別の保存先へ、新しい名前で検証付きコピーを作成します。")
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(3)
                 }
 
                 GroupBox("1. 入力フォルダとコピー先") {

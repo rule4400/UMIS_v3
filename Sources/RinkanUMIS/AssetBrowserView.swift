@@ -237,14 +237,6 @@ struct AssetBrowserView: View {
         .focusedSceneValue(\.umisSearchAction, canFocusSearch ? {
             searchIsFocused = true
         } : nil)
-        .onChange(of: projection.revision) { _ in
-            // A hidden selection must never receive a scene assignment or metadata mutation by
-            // surprise. Filtering therefore narrows the active selection to what is still visible.
-            let narrowed = selectedIDs.intersection(projection.visibleAssetIDs)
-            if narrowed != selectedIDs {
-                setSelectedIDs(narrowed)
-            }
-        }
     }
 
     private var emptyStateMessage: String {

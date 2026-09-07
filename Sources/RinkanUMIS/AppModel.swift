@@ -338,7 +338,7 @@ final class AppModel: ObservableObject {
     private var lanOperationObservation: AnyCancellable?
     private var lanStatusObservation: AnyCancellable?
 
-    init() {
+    init(initializeServices: Bool = true) {
         mediaPipeline = nil
         let other = AppScene(id: UUID(), day: 0, number: 0, name: "その他")
         var initialScenes = [other]
@@ -348,6 +348,14 @@ final class AppModel: ObservableObject {
         scenes = initialScenes
         sceneNamesByID = Dictionary(uniqueKeysWithValues: initialScenes.map { ($0.id, $0.name) })
         selectedSceneID = other.id
+        projectSettings = ProjectSettings(
+            categories: Self.defaultProjectCategories(),
+            renameRule: Self.defaultRenameRule
+        )
+        // Layout/state tests must not open the user's journals, acquire the app lock,
+        // monitor physical cards, or initialize LAN services. No service means all
+        // existing operation admission gates remain fail-closed.
+        guard initializeServices else { return }
         lanSceneCatalog = try? LANSceneCatalogCoordinator()
         if let lanSceneCatalog {
             lanOperationInProgress = lanSceneCatalog.operationInProgress
@@ -359,10 +367,6 @@ final class AppModel: ObservableObject {
                 .removeDuplicates()
                 .sink { [weak self] in self?.lanStatusMessage = $0 }
         }
-        projectSettings = ProjectSettings(
-            categories: Self.defaultProjectCategories(),
-            renameRule: Self.defaultRenameRule
-        )
 
         let applicationSupportRoot: URL
         do {
@@ -434,6 +438,10 @@ final class AppModel: ObservableObject {
             category: ingestAssetCategoryFilter,
             revision: revision
         )
+        let visibleSelection = selectedAssetIDs.intersection(ingestBrowserProjection.visibleAssetIDs)
+        if visibleSelection != selectedAssetIDs {
+            selectedAssetIDs = visibleSelection
+        }
     }
 
     /// Confirmation sheets and the card-initialization summary can be re-evaluated frequently
@@ -507,6 +515,10 @@ final class AppModel: ObservableObject {
             category: reviewAssetCategoryFilter,
             revision: revision
         )
+        let visibleSelection = reviewSelectedAssetIDs.intersection(reviewBrowserProjection.visibleAssetIDs)
+        if visibleSelection != reviewSelectedAssetIDs {
+            reviewSelectedAssetIDs = visibleSelection
+        }
     }
 
     private func bumpIngestCollectionMetadataRevision() {

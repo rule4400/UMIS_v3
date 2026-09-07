@@ -4,6 +4,27 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        // Let the window, not a workspace's ideal size, own the viewport. Without this
+        // boundary NavigationSplitView can grow taller than the window when changing
+        // to a workspace with a flexible browser and fixed header/footer. SwiftUI then
+        // centers the oversized split view, placing even the sidebar rows offscreen.
+        VStack(spacing: 0) {
+            GeometryReader { viewport in
+                workspaceNavigation
+                    .frame(width: viewport.size.width, height: viewport.size.height)
+            }
+            // Reserve real layout space: an inset can be extended through by the native
+            // navigation split view, covering the workspace's bottom action buttons.
+            StatusBarView()
+        }
+        .sheet(item: $model.previewAsset) { asset in
+            MediaPreviewView(asset: asset, pipeline: model.mediaPipeline)
+                .frame(minWidth: 760, minHeight: 560)
+        }
+        .focusedSceneValue(\.umisMainSceneIsActive, true)
+    }
+
+    private var workspaceNavigation: some View {
         NavigationSplitView {
             List(WorkspaceRoute.allCases, selection: $model.route) { route in
                 Label(route.title, systemImage: route.systemImage)
@@ -30,13 +51,6 @@ struct RootView: View {
         .dropDestination(for: URL.self) { urls, _ in
             guard model.route == .ingest else { return false }
             return model.acceptDroppedURLs(urls)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            StatusBarView()
-        }
-        .sheet(item: $model.previewAsset) { asset in
-            MediaPreviewView(asset: asset, pipeline: model.mediaPipeline)
-                .frame(minWidth: 760, minHeight: 560)
         }
     }
 }

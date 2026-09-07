@@ -2,6 +2,32 @@ import AVKit
 import SwiftUI
 import UMISMedia
 
+enum MediaPreviewNotice {
+    static func message(
+        kind: MediaKind,
+        isPlayable: Bool,
+        generationMethod: MediaGenerationMethod,
+        isFallback: Bool
+    ) -> String? {
+        if (kind == .movie || kind == .audio), !isPlayable {
+            let media = kind == .audio ? "音声" : "動画"
+            let representation = generationMethod == .genericIcon
+                ? "代替アイコンを表示しています。"
+                : "静止プレビューを表示しています。"
+            return "この\(media)は現在のプレビューでは再生できません。\(representation)「Finderで表示」から対応アプリで確認してください。"
+        }
+        // A playable movie may have only a fallback poster, but its player is still usable.
+        guard !isPlayable else { return nil }
+        if generationMethod == .genericIcon {
+            return "画像を生成できないため、代替アイコンを表示しています。「Finderで表示」から元ファイルを確認してください。"
+        }
+        if isFallback {
+            return "簡易プレビューを表示しています。画質や細部は元ファイルを対応アプリで確認してください。"
+        }
+        return nil
+    }
+}
+
 struct MediaPreviewView: View {
     let asset: AppAsset
     let pipeline: MediaPipeline?
@@ -50,6 +76,22 @@ struct MediaPreviewView: View {
             .padding(14)
 
             Divider()
+
+            if let preview, let notice = MediaPreviewNotice.message(
+                kind: preview.kind,
+                isPlayable: preview.playback?.isPlayable == true,
+                generationMethod: preview.image.generationMethod,
+                isFallback: preview.image.isFallback
+            ) {
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .lineLimit(3)
+                    .help(notice)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.orange.opacity(0.12))
+                    .accessibilityLabel(notice)
+            }
 
             GeometryReader { proxy in
                 let viewportPointSize = CGSize(

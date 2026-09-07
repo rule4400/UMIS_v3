@@ -5,19 +5,37 @@ struct IngestWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HSplitView {
-                SourceConfigurationView()
-                    .frame(minWidth: 230, idealWidth: 260, maxWidth: 330)
+            GeometryReader { viewport in
+                if model.showInspector, viewport.size.width < 1_100 {
+                    // AppKit's nested split view retains oversized pane widths when shrinking.
+                    // At compact widths reserve the side panels explicitly, leaving the browser
+                    // the remaining space instead of clipping either side of the workspace.
+                    HStack(spacing: 0) {
+                        SourceConfigurationView()
+                            .frame(width: 230)
+                        Divider()
+                        AssetBrowserView()
+                            .frame(minWidth: 0, maxWidth: .infinity)
+                        Divider()
+                        SceneAssignmentView()
+                            .controlSize(.small)
+                            .frame(width: 280)
+                            .disabled(!model.canStartExclusiveOperation)
+                    }
+                } else {
+                    HSplitView {
+                        SourceConfigurationView()
+                            .frame(minWidth: 230, idealWidth: 260, maxWidth: 330)
 
-                AssetBrowserView()
-                    .frame(minWidth: 500)
+                        AssetBrowserView()
+                            .frame(minWidth: 340, idealWidth: 500, maxWidth: .infinity)
 
-                if model.showInspector {
-                    SceneAssignmentView()
-                        .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-                        .disabled(
-                            !model.canStartExclusiveOperation
-                        )
+                        if model.showInspector {
+                            SceneAssignmentView()
+                                .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
+                                .disabled(!model.canStartExclusiveOperation)
+                        }
+                    }
                 }
             }
 
@@ -377,7 +395,8 @@ private struct IngestActionBar: View {
                 Label(readinessMessage, systemImage: canBeginIngest ? "checkmark.circle" : "info.circle")
                     .font(.callout)
                     .foregroundStyle(canBeginIngest ? Color.green : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
+                    .help(readinessMessage)
                 if !model.explicitlyExcludedAssetIDs.isEmpty {
                     Text("利用者確認による明示除外 \(model.explicitlyExcludedAssetIDs.count)件")
                         .font(.caption)
