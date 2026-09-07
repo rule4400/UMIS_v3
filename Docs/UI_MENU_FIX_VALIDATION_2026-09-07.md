@@ -47,7 +47,19 @@ CUAでローカルQAアプリを操作。カードの消去・取り出し、実
 - `swift test --parallel`: 全304項目、終了コード0。大文字小文字を区別する専用APFSボリュームが必要な1項目は環境条件によるskip。
 - `swift build --configuration release -Xswiftc -warnings-as-errors`: 成功。
 - `git diff --check`: 成功。
-- Universal 2成果物の情報はパッケージ作成後に追記する。
+- Universal 2 Releaseパッケージ作成: 成功。`lipo -archs` で `x86_64 arm64` を確認。
+- 完成パッケージの `codesign --verify --deep --strict --verbose=2`: 成功（ローカル検証用ad-hoc署名）。
+- 完成パッケージを起動し、評価・リネーム・取り込みを最小ウインドウで再確認: サイドバーと下部操作が表示範囲内。
+
+## 成果物とロールバック
+
+- 修正ソース: `6e8f7da167aa0fae0627963cf7165ad7a3e7c5df`（ビルド時のworktreeはclean）。
+- GitHubブランチ: `feature/ui-ux-20260907`。修正ソースをpush済み。変更前は `a177906d2776eb885bfe4824638ca15ef5e712b3` として履歴に保持。
+- ローカルアプリ: `dist/UI-menu-fix-20260907/RINKAN UMIS.app`
+- バージョン: `0.2.0-alpha.5`、build `16`、最低macOS `13.0`。
+- ビルド記録: `dist/UI-menu-fix-20260907/manifests/build-0.2.0-alpha.5-16-20260907T003140Z.txt`
+- 実行ファイルSHA-256: `c27775937316427aacf357b60803921754336c72dc58077e1123a07f6b46be30`
+- この変更ではmainへのマージ、公証申請、リリース公開、既存公証済みアプリの置き換えは行っていない。
 
 ## 検証の境界
 
