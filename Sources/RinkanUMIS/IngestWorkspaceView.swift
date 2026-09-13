@@ -58,6 +58,15 @@ struct IngestWorkspaceView: View {
                 .accessibilityLabel(model.showInspector ? "シーンパネルを隠す" : "シーンパネルを表示")
             }
         }
+        // Keep modal identity outside the compact/wide layout branches so resizing the
+        // main window cannot discard the sheet's local, uncommitted capture draft.
+        .sheet(isPresented: $model.showCaptureConfigurationSheet) {
+            CaptureConfigurationSheet(draft: model.makeCaptureConfigurationDraft())
+                .environmentObject(model)
+        }
+        .sheet(isPresented: $model.showProjectLocationSheet) {
+            ProjectLocationSheet().environmentObject(model)
+        }
     }
 }
 
@@ -73,7 +82,6 @@ private struct SourceConfigurationView: View {
                     selection: Binding(
                         get: { model.selectedStoredProjectID },
                         set: { next in
-                            model.selectedStoredProjectID = next
                             model.loadStoredProject(id: next)
                         }
                     )
@@ -83,8 +91,39 @@ private struct SourceConfigurationView: View {
                         Text(project.name).tag(Optional(project.id.rawValue))
                     }
                 }
-                TextField("プロジェクト名", text: $model.projectName)
-                TextField("会場", text: $model.locationName)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("プロジェクト名").font(.caption).foregroundStyle(.secondary)
+                    TextField("プロジェクト名", text: $model.projectName)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("プロジェクト名")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("会場").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { model.beginAddProjectLocation() } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("会場を追加")
+                        .help("このプロジェクトで使う会場を追加します")
+                    }
+                    Picker("会場", selection: Binding(
+                        get: { model.selectedProjectLocationID },
+                        set: { model.selectProjectLocation(id: $0) }
+                    )) {
+                        Text("会場を選択").tag(UUID?.none)
+                        ForEach(model.availableProjectLocations, id: \.id.rawValue) { location in
+                            Text(location.displayName).tag(Optional(location.id.rawValue))
+                        }
+                    }
+                    .labelsHidden()
+                    .accessibilityLabel("会場")
+                    if model.availableProjectLocations.isEmpty {
+                        Text("＋から会場を登録できます")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button("新規") { model.createNewProject() }
                     Button("保存") { model.saveCurrentProject() }
@@ -106,16 +145,57 @@ private struct SourceConfigurationView: View {
             .disabled(!model.canStartExclusiveOperation)
 
             Section("撮影情報") {
-                TextField("撮影者", text: $model.photographer)
-                TextField("カードNo", text: $model.cardNumber)
-                    .onSubmit { model.resolveLocalCardConfiguration() }
-                Text("カードNoを入力してReturnを押すと、保存済みの撮影者情報を呼び出します。")
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(model.photographer.isEmpty ? "撮影者 未選択" : model.photographer,
+                          systemImage: "person.crop.circle")
+                        .lineLimit(2)
+                        .help(model.photographer)
+                    Label(model.cardNumber.isEmpty ? "カードNo 未選択" : "カードNo \(model.cardNumber)",
+                          systemImage: "sdcard")
+                        .lineLimit(2)
+                        .help(model.cardNumber)
+                    Button {
+                        model.beginCaptureConfiguration()
+                    } label: {
+                        Label("撮影者・カードを選択…", systemImage: "person.crop.rectangle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .accessibilityLabel("撮影者とカードNoを選択")
+                }
+                Text("別画面で撮影者とカードを選び、「決定」で反映します。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .disabled(!model.canStartExclusiveOperation)
 
             Section("ソース") {
+                Label(model.cardAutoSelectionStatus, systemImage: "sdcard")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .help(model.cardAutoSelectionStatus)
+                if !model.connectedCardCandidates.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("接続中のSDカード").font(.caption.weight(.medium))
+                        ForEach(model.connectedCardCandidates, id: \.id.rawValue) { card in
+                            Button {
+                                model.selectConnectedCard(
+                                    sourceID: card.id,
+                                    arrivalGeneration: card.arrivalGeneration
+                                )
+                            } label: {
+                                Label(
+                                    card.mountURL?.lastPathComponent ?? "SDカード",
+                                    systemImage: model.activeSourceIdentity?.id == card.id
+                                        ? "checkmark.circle.fill" : "sdcard"
+                                )
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .help(card.mountURL?.path ?? "SDカードを読み込み対象に選択")
+                        }
+                    }
+                }
                 PathButton(
                     title: "撮影カード／フォルダ",
                     url: model.sourceURL,
@@ -154,6 +234,11 @@ private struct SourceConfigurationView: View {
                     url: model.destinationURL,
                     action: model.chooseDestination
                 )
+                Text(model.projectDestinationStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .help(model.projectDestinationStatus)
             }
             .disabled(!model.canStartExclusiveOperation)
 
@@ -252,133 +337,6 @@ struct PathButton: View {
                 .help(url?.path(percentEncoded: false) ?? "選択ボタンで\(title)を指定してください")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct SceneAssignmentView: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("シーン")
-                    .font(.headline)
-                Spacer()
-                Menu {
-                    ForEach(1 ... 4, id: \.self) { day in
-                        Button("\(day)日目へ追加") { model.addScene(day: day) }
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .menuStyle(.borderlessButton)
-                .accessibilityLabel("シーンを追加")
-                .help("日付を選んで新しいシーンを追加")
-                .disabled(model.phase.isBusy || model.renameIsBusy)
-            }
-            .padding(12)
-
-            Divider()
-
-            List(selection: $model.selectedSceneID) {
-                ForEach(model.scenes) { scene in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 7) {
-                                Text(scene.code)
-                                    .font(.caption.monospaced().weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                TextField(
-                                    "シーン名",
-                                    text: Binding(
-                                        get: {
-                                            model.scenes.first(where: { $0.id == scene.id })?.name
-                                                ?? scene.name
-                                        },
-                                        set: { model.updateSceneName(id: scene.id, name: $0) }
-                                    )
-                                )
-                                    .textFieldStyle(.plain)
-                                    .accessibilityLabel("\(scene.code)のシーン名")
-                            }
-                            let count = model.assignmentCount(for: scene.id)
-                            Text("\(count)項目")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .tag(scene.id)
-                    .contextMenu {
-                        Button("上へ移動") { model.moveScene(scene, offset: -1) }
-                        Button("下へ移動") { model.moveScene(scene, offset: 1) }
-                        Divider()
-                        if scene.day != 0 {
-                            Button("削除", role: .destructive) { model.removeScene(scene) }
-                        }
-                    }
-                }
-            }
-            .disabled(model.phase.isBusy || model.renameIsBusy)
-
-            Divider()
-
-            VStack(spacing: 8) {
-                Button("選択素材を割り当て") { model.assignSelectionToCurrentScene() }
-                    .buttonStyle(.borderedProminent)
-                    .frame(maxWidth: .infinity)
-                    .disabled(
-                        model.phase.isBusy || model.renameIsBusy
-                            || model.visibleSelectedIngestAssetIDs.isEmpty
-                            || model.selectedSceneID == nil
-                    )
-                    .help("選択中の素材を選んだシーンへ割り当て（⌘Return）")
-                if model.visibleSelectedIngestAssetIDs.isEmpty {
-                    Text("中央の素材を選択してから、割り当て先のシーンを選んでください")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Button("選択素材の割り当てを解除") { model.removeAssignmentsForSelection() }
-                    .frame(maxWidth: .infinity)
-                    .disabled(
-                        model.phase.isBusy || model.renameIsBusy
-                            || model.visibleSelectedIngestAssetIDs.isEmpty
-                    )
-                Divider()
-                Button("選択素材を今回の取り込みから除外") {
-                    model.excludeSelectionFromIngest()
-                }
-                .frame(maxWidth: .infinity)
-                .disabled(
-                    model.phase.isBusy || model.renameIsBusy
-                        || model.visibleSelectedIngestAssetIDs.isEmpty
-                )
-                Button("選択素材を取り込み対象に戻す") {
-                    model.includeSelectionInIngest()
-                }
-                .frame(maxWidth: .infinity)
-                .disabled(
-                    model.phase.isBusy || model.renameIsBusy
-                        || model.visibleSelectedIngestAssetIDs.isDisjoint(
-                            with: model.explicitlyExcludedAssetIDs
-                        )
-                )
-                if !model.explicitlyExcludedAssetIDs.isEmpty {
-                    Button("除外をすべて戻す（\(model.explicitlyExcludedAssetIDs.count)件）") {
-                        model.restoreAllExcludedAssets()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .disabled(model.phase.isBusy || model.renameIsBusy)
-                }
-                if model.unreviewedEmptyDirectoryCount > 0 {
-                    Text("空フォルダ \(model.unreviewedEmptyDirectoryCount)件の判断が未確認です")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-            .padding(12)
-        }
     }
 }
 

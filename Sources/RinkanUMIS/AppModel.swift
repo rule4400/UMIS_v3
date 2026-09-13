@@ -155,9 +155,16 @@ final class AppModel: ObservableObject {
         didSet {
             sceneNamesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0.name) })
             bumpIngestCollectionMetadataRevision()
+            synchronizeSceneDaySelection()
         }
     }
-    @Published var selectedSceneID: UUID? { didSet { invalidatePreparedRenamePreviewIfNeeded() } }
+    @Published var selectedSceneDay = 0
+    @Published var selectedSceneID: UUID? {
+        didSet {
+            invalidatePreparedRenamePreviewIfNeeded()
+            synchronizeSceneDaySelection()
+        }
+    }
     @Published var projectName = "新規プロジェクト" {
         didSet {
             guard oldValue != projectName else { return }
@@ -186,6 +193,11 @@ final class AppModel: ObservableObject {
             markProjectMetadataDirty()
         }
     }
+    @Published var showCaptureConfigurationSheet = false
+    @Published private(set) var captureConfigurationError: String?
+    @Published var showProjectLocationSheet = false
+    @Published private(set) var projectLocationError: String?
+    @Published private(set) var projectDestinationStatus = "保存先はプロジェクトごとに保持されます"
     @Published var phase: WorkspacePhase = .idle
     @Published var scanErrors: [String] = []
     @Published var activity: [ActivityRecord] = []
@@ -236,7 +248,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pendingVerifiedDeliveryCount = 0
     @Published var cardInitializationStatus = "検証済み取り込み後に利用できます"
     @Published var availableProjects: [Project] = []
-    @Published var selectedStoredProjectID: UUID?
+    @Published private(set) var selectedStoredProjectID: UUID?
     @Published var projectPersistenceStatus = "未保存"
     @Published private(set) var projectOperationInFlight = false
     @Published private(set) var lastDeletedProjectID: UUID?
@@ -321,12 +333,32 @@ final class AppModel: ObservableObject {
     private var projectID = ProjectID()
     private var projectPhotographers: [Photographer] = []
     private var projectSettings = ProjectSettings()
+    private var selectedProjectPhotographerID: PhotographerID?
+    private var selectedProjectCardID: CardDefinitionID?
+    private var projectHasUnsavedChanges = true
     private let volumeRegistry = VolumeIdentityRegistry()
     private let volumeActivity = VolumeIOActivityRegistry()
     private let destinationIdentityProvider = DestinationIdentityProvider()
     private var cardVolumeMonitor: CardVolumeMonitor?
     private var cardAppearanceRegistrationGenerations: [SourceVolumeID: UUID] = [:]
     private var deferredCardScanGeneration: UUID?
+    @Published private(set) var connectedCardCandidates: [VolumeIdentity] = []
+    @Published private(set) var cardAutoSelectionStatus = "認識できるSDカードを接続すると、自動で読み込み対象にします"
+    var cardAutoSelectionMainWindowIsKey = false {
+        didSet {
+            if oldValue != cardAutoSelectionMainWindowIsKey { scheduleAutomaticCardSelection() }
+        }
+    }
+    var cardAutoSelectionInteractionBlocked = false {
+        didSet {
+            if oldValue != cardAutoSelectionInteractionBlocked { scheduleAutomaticCardSelection() }
+        }
+    }
+    private var registeredCardCandidates: [SourceVolumeID: VolumeIdentity] = [:]
+    private var rejectedAutomaticCardIDs: Set<SourceVolumeID> = []
+    private var automaticCardSelectionTask: Task<Void, Never>?
+    private var automaticCardSelectionGeneration = UUID()
+    private var automaticallySelectedCard: CardInsertionIdentity?
     private var eraseGate: EraseGate?
     private var pendingEraseRunID: IngestRunID?
     private var pendingEraseProfile: CardFormatProfile?
@@ -563,6 +595,9 @@ final class AppModel: ObservableObject {
         emptyDirectoryReviewPaths.count - unreviewedEmptyDirectoryCount
     }
     var canStartExclusiveOperation: Bool {
+        !showCaptureConfigurationSheet && !showProjectLocationSheet && canStartExclusiveOperationOutsideProjectSheets
+    }
+    private var canStartExclusiveOperationOutsideProjectSheets: Bool {
         applicationInstanceLock != nil
             && operationStore != nil
             && !destructiveOutcomeQuarantined
@@ -586,7 +621,7 @@ final class AppModel: ObservableObject {
     /// exception is a fresh ingest scan that can resolve an unexpected-removal isolation. No
     /// other operation may use this narrower recovery admission.
     var canStartIngestSourceScan: Bool {
-        Self.ingestSourceScanAdmissionAllowed(
+        !showCaptureConfigurationSheet && !showProjectLocationSheet && Self.ingestSourceScanAdmissionAllowed(
             canStartExclusiveOperation: canStartExclusiveOperation,
             applicationReady: applicationInstanceLock != nil && operationStore != nil,
             phase: phase,
@@ -617,7 +652,9 @@ final class AppModel: ObservableObject {
         hasActiveIngestScanTask && !phase.isBusy
     }
     var canPresentMediaPreview: Bool {
-        !mediaCacheOperationInFlight
+        !showCaptureConfigurationSheet
+            && !showProjectLocationSheet
+            && !mediaCacheOperationInFlight
             && !mediaAccessQuiescenceLatched
             && !destructiveOutcomeQuarantined
             && !phase.isBusy
@@ -656,7 +693,7 @@ final class AppModel: ObservableObject {
     /// monitor callback must never clear the current ingest UI before discovering that another
     /// workspace already owns the filesystem/media boundary.
     private var ingestScanAdmissionMustWait: Bool {
-        Self.ingestScanAdmissionMustWait(
+        showCaptureConfigurationSheet || showProjectLocationSheet || Self.ingestScanAdmissionMustWait(
             phase: phase,
             renameIsBusy: renameIsBusy,
             projectOperationInFlight: projectOperationInFlight,
@@ -763,15 +800,17 @@ final class AppModel: ObservableObject {
         Self.projectDeletionAdmissionAllowed(
             canStartExclusiveOperation: canStartExclusiveOperation,
             hasSelectedProject: selectedStoredProjectID != nil,
-            hasProjectStore: projectStore != nil
+            hasProjectStore: projectStore != nil,
+            selectedProjectMatchesCurrentIdentity: selectedStoredProjectID == projectID.rawValue
         )
     }
     nonisolated static func projectDeletionAdmissionAllowed(
         canStartExclusiveOperation: Bool,
         hasSelectedProject: Bool,
-        hasProjectStore: Bool
+        hasProjectStore: Bool,
+        selectedProjectMatchesCurrentIdentity: Bool = true
     ) -> Bool {
-        canStartExclusiveOperation && hasSelectedProject && hasProjectStore
+        canStartExclusiveOperation && hasSelectedProject && hasProjectStore && selectedProjectMatchesCurrentIdentity
     }
     var pendingExclusionAssets: [AppAsset] {
         pendingExclusionAssetsProjection
@@ -900,6 +939,7 @@ final class AppModel: ObservableObject {
             statusMessage = "別の処理が開始されたため、ソース選択を適用しませんでした"
             return
         }
+        automaticallySelectedCard = nil
         sourceURL = url
         scan(url: url)
     }
@@ -908,6 +948,7 @@ final class AppModel: ObservableObject {
     func acceptDroppedURLs(_ urls: [URL]) -> Bool {
         let fileURLs = urls.filter(\.isFileURL)
         guard !fileURLs.isEmpty, canStartIngestSourceScan else { return false }
+        automaticallySelectedCard = nil
         if fileURLs.count == 1,
            (try? fileURLs[0].resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
             sourceURL = fileURLs[0]
@@ -925,7 +966,154 @@ final class AppModel: ObservableObject {
             statusMessage = "別の処理が開始されたため、保存先選択を適用しませんでした"
             return
         }
+        setProjectDestination(selectedURL)
+    }
+
+    /// Persist only this field of an existing project. Choosing a folder must not implicitly
+    /// save unrelated edits to scenes, project name, or capture configuration.
+    func setProjectDestination(_ selectedURL: URL) {
+        guard canStartExclusiveOperation else { return }
+        let hadOtherUnsavedChanges = projectHasUnsavedChanges
         destinationURL = selectedURL
+        guard let id = selectedStoredProjectID, let projectStore else {
+            projectDestinationStatus = "この保存先を保持するにはプロジェクトを保存してください"
+            return
+        }
+        guard id == projectID.rawValue else {
+            projectDestinationStatus = "保存対象のプロジェクトが一致しません。プロジェクトを再度保存してください"
+            return
+        }
+        let expectedProjectID = projectID
+        let generation = UUID()
+        projectOperationGeneration = generation
+        projectOperationInFlight = true
+        projectDestinationStatus = "保存先をプロジェクトへ保存中…"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { projectOperationInFlight = false }
+            do {
+                let loaded = try await projectStore.load(id: ProjectID(rawValue: id))
+                let updated = ProjectConfigurationEditing.replacingDestination(of: loaded.project, with: selectedURL)
+                try await projectStore.save(updated)
+                guard projectID == expectedProjectID else { return }
+                let otherChangesRemain = hadOtherUnsavedChanges || projectOperationGeneration != generation
+                projectHasUnsavedChanges = otherChangesRemain
+                projectDestinationStatus = "保存先をプロジェクトに保存しました"
+                projectPersistenceStatus = otherChangesRemain ? "保存先は保存済み・その他に未保存の変更" : "保存済み"
+                refreshStoredProjects()
+            } catch {
+                guard projectID == expectedProjectID else { return }
+                projectDestinationStatus = "保存先の保持に失敗しました。プロジェクトを再度保存してください"
+                projectPersistenceStatus = "保存先の保存失敗・未保存"
+                statusMessage = userFacingMessage(for: error)
+            }
+        }
+    }
+
+    var availableProjectLocations: [ProjectLocation] {
+        projectSettings.locations.filter { !$0.isArchived }
+    }
+    var selectedProjectLocationID: UUID? {
+        projectSettings.locations.first {
+            $0.id == projectSettings.selectedLocationID && !$0.isArchived && $0.displayName == locationName
+        }?.id.rawValue
+    }
+    var availableProjectPhotographers: [Photographer] {
+        projectPhotographers.filter { !$0.isArchived }
+    }
+    var availableProjectCards: [CardDefinition] {
+        projectSettings.cardDefinitions.filter(\.isActive)
+    }
+
+    func selectProjectLocation(id: UUID?) {
+        guard canStartExclusiveOperation else { return }
+        guard let id else {
+            projectSettings.selectedLocationID = nil
+            locationName = ""
+            markProjectMetadataDirty()
+            return
+        }
+        guard let entry = availableProjectLocations.first(where: { $0.id.rawValue == id }) else { return }
+        projectSettings.selectedLocationID = entry.id
+        locationName = entry.displayName
+        markProjectMetadataDirty()
+    }
+
+    func beginAddProjectLocation() {
+        guard canStartExclusiveOperation else { return }
+        projectLocationError = nil
+        showProjectLocationSheet = true
+    }
+
+    @discardableResult
+    func addProjectLocation(named name: String) -> Bool {
+        guard !showCaptureConfigurationSheet, canStartExclusiveOperationOutsideProjectSheets else { return false }
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            projectLocationError = "会場名を入力してください"
+            return false
+        }
+        var settings = projectSettings
+        do {
+            try ProjectConfigurationEditing.reconcileLocation(name: normalized, settings: &settings)
+            projectSettings = settings
+            locationName = normalized
+            markProjectMetadataDirty()
+            projectLocationError = nil
+            showProjectLocationSheet = false
+            return true
+        } catch {
+            projectLocationError = userFacingMessage(for: error)
+            return false
+        }
+    }
+
+    func makeCaptureConfigurationDraft() -> CaptureConfigurationDraft {
+        let selectedPhotographer = availableProjectPhotographers.first {
+            $0.id == selectedProjectPhotographerID && $0.displayName == photographer
+        }
+        let selectedCard = availableProjectCards.first {
+            $0.id == selectedProjectCardID && $0.cardNumber == cardNumber
+        }
+        return CaptureConfigurationDraft(
+            projectID: projectID.rawValue,
+            selectedPhotographerID: selectedPhotographer?.id.rawValue,
+            selectedCardID: selectedCard?.id.rawValue,
+            newPhotographerName: selectedPhotographer == nil ? photographer : "",
+            newCardNumber: selectedCard == nil ? cardNumber : ""
+        )
+    }
+
+    func beginCaptureConfiguration() {
+        guard canStartExclusiveOperation else { return }
+        captureConfigurationError = nil
+        showCaptureConfigurationSheet = true
+    }
+
+    @discardableResult
+    func applyCaptureConfiguration(_ draft: CaptureConfigurationDraft) -> Bool {
+        guard !showProjectLocationSheet, canStartExclusiveOperationOutsideProjectSheets,
+              draft.projectID == projectID.rawValue else { return false }
+        do {
+            let resolved = try ProjectConfigurationEditing.resolve(
+                draft, photographers: projectPhotographers, cards: projectSettings.cardDefinitions
+            )
+            // Resolution validates everything first. No partial changes survive a failure.
+            projectPhotographers = resolved.photographers
+            projectSettings.cardDefinitions = resolved.cards
+            selectedProjectPhotographerID = resolved.photographerID
+            selectedProjectCardID = resolved.cardID
+            photographer = resolved.photographerName
+            cardNumber = resolved.cardNumber
+            markProjectMetadataDirty()
+            captureConfigurationError = nil
+            showCaptureConfigurationSheet = false
+            statusMessage = "撮影者・カードNoを設定しました。登録内容はプロジェクトの保存で保持されます"
+            return true
+        } catch {
+            captureConfigurationError = userFacingMessage(for: error)
+            return false
+        }
     }
 
     func createNewProject() {
@@ -935,7 +1123,7 @@ final class AppModel: ObservableObject {
         restartScanAfterProjectTransition(rescanScope)
     }
 
-    private func resetToNewProjectState() {
+    func resetToNewProjectState() {
         lanSceneCatalog?.setOff()
         lanCatalogEnabled = false
         projectOperationGeneration = UUID()
@@ -947,6 +1135,13 @@ final class AppModel: ObservableObject {
         cardNumber = ""
         locationName = ""
         projectPhotographers = []
+        selectedProjectPhotographerID = nil
+        selectedProjectCardID = nil
+        showCaptureConfigurationSheet = false
+        showProjectLocationSheet = false
+        captureConfigurationError = nil
+        projectLocationError = nil
+        projectDestinationStatus = "新規プロジェクトの保存先を選択してください"
         projectSettings = ProjectSettings(
             categories: Self.defaultProjectCategories(),
             renameRule: Self.defaultRenameRule
@@ -980,6 +1175,8 @@ final class AppModel: ObservableObject {
                         return
                     }
                     selectedStoredProjectID = project.id.rawValue
+                    projectHasUnsavedChanges = false
+                    projectDestinationStatus = "保存先をプロジェクトに保存しました"
                     projectPersistenceStatus = "保存済み"
                     statusMessage = "プロジェクト設定をatomic保存しました"
                     refreshStoredProjects()
@@ -996,8 +1193,14 @@ final class AppModel: ObservableObject {
     }
 
     func loadStoredProject(id: UUID?) {
+        // The picker must not publish the requested ID before loading succeeds. A failed or
+        // rejected load keeps the displayed project and deletion target bound to the same ID.
+        // Choosing the explicit "new / unselected" row is the same action as the New button.
+        guard let id else {
+            createNewProject()
+            return
+        }
         guard canStartExclusiveOperation,
-              let id,
               let projectStore
         else { return }
         let generation = UUID()
@@ -1017,11 +1220,15 @@ final class AppModel: ObservableObject {
             do {
                 let result = try await projectStore.load(id: ProjectID(rawValue: id))
                 guard projectOperationGeneration == generation, !phase.isBusy else { return }
+                guard result.project.id.rawValue == id else {
+                    throw UMISCoreError.invalidPlan("読み込んだプロジェクトのIDが選択対象と一致しません")
+                }
                 rescanScope = activeSourceScanScope
                 applyStoredProject(result.project)
                 transitionApplied = true
                 selectedStoredProjectID = result.project.id.rawValue
                 projectPersistenceStatus = result.source == .main ? "読込済み" : "バックアップから復旧読込"
+                projectHasUnsavedChanges = false
                 statusMessage = result.source == .main
                     ? "プロジェクトを読み込みました"
                     : "mainが無効だったため既知正常バックアップを読み込みました"
@@ -1036,6 +1243,7 @@ final class AppModel: ObservableObject {
     func deleteCurrentStoredProject() {
         guard canDeleteCurrentStoredProject,
               let id = selectedStoredProjectID,
+              id == projectID.rawValue,
               let projectStore
         else { return }
         let generation = UUID()
@@ -1496,7 +1704,7 @@ final class AppModel: ObservableObject {
     }
 
     func assignSelectionToCurrentScene() {
-        guard canStartExclusiveOperation else { return }
+        guard canInteractWithScenePanel, selectedSceneIsVisible else { return }
         guard let selectedSceneID, let scan = coreScanResult else { return }
         let groupedSelection = Self.expandedCompanionAssetIDs(
             visibleSelectedIngestAssetIDs,
@@ -1803,18 +2011,22 @@ final class AppModel: ObservableObject {
         guard !normalized.isEmpty,
               let definition = projectSettings.cardDefinitions.first(where: {
                   $0.isActive && $0.cardNumber == normalized
-              }),
-              let photographerID = definition.photographerID,
-              let match = projectPhotographers.first(where: {
-                  $0.id == photographerID && !$0.isArchived
               })
         else { return }
-        photographer = match.displayName
-        statusMessage = "カードNoのプロジェクト設定から撮影者を選択しました"
+        selectedProjectCardID = definition.id
+        let match = definition.photographerID.flatMap { photographerID in
+            projectPhotographers.first { $0.id == photographerID && !$0.isArchived }
+        }
+        selectedProjectPhotographerID = match?.id
+        photographer = match?.displayName ?? ""
+        statusMessage = match == nil
+            ? "このカードには撮影者が登録されていません。撮影情報から選択してください"
+            : "カードNoのプロジェクト設定から撮影者を選択しました"
     }
 
     func applyReceivedLANSceneCatalog(expectedVersion: CatalogVersionRef) {
-        guard !phase.isBusy,
+        guard !showCaptureConfigurationSheet, !showProjectLocationSheet,
+              !phase.isBusy,
               !renameIsBusy,
               !projectOperationInFlight,
               let coordinator = lanSceneCatalog,
@@ -1873,7 +2085,8 @@ final class AppModel: ObservableObject {
                     lease,
                     applyingPersistedCandidate: { persistedCandidate in
                         scenes = persistedCandidate.activeScenes
-                        selectedSceneID = scenes.first?.id
+                        // The scene observer retains the selected UUID and its current day
+                        // when the shared catalog still contains it; removals clear selection.
                         sceneAssignments.removeAll()
                         invalidateVerifiedIngestIntent()
                         appliedSceneCatalogVersion = persistedCandidate.version
@@ -4495,6 +4708,8 @@ final class AppModel: ObservableObject {
 
     private func handleCardVolumeEvent(_ event: CardVolumeMonitorEvent) {
         switch event {
+        case .inventoryChanged:
+            scheduleAutomaticCardSelection()
         case let .appeared(identity):
             if phase == .erasingCard || phase == .ejectingCard { return }
             guard let store = operationStore else {
@@ -4520,23 +4735,42 @@ final class AppModel: ObservableObject {
                           .securityDigest == identity.securityDigest
                     else { return }
                     cardAppearanceRegistrationGenerations.removeValue(forKey: identity.id)
+                    registeredCardCandidates[identity.id] = identity
+                    rejectedAutomaticCardIDs.remove(identity.id)
+                    updateConnectedCardCandidates()
                     acceptRegisteredCardAppearance(identity)
+                    scheduleAutomaticCardSelection()
                 } catch is CancellationError {
                     if cardAppearanceRegistrationGenerations[identity.id] == registrationGeneration {
                         cardAppearanceRegistrationGenerations.removeValue(forKey: identity.id)
                     }
+                    scheduleAutomaticCardSelection()
                 } catch {
                     guard cardAppearanceRegistrationGenerations[identity.id] == registrationGeneration else { return }
                     cardAppearanceRegistrationGenerations.removeValue(forKey: identity.id)
+                    registeredCardCandidates.removeValue(forKey: identity.id)
+                    rejectedAutomaticCardIDs.insert(identity.id)
+                    updateConnectedCardCandidates()
                     rejectUnregisteredCardIfSelected(
                         identity,
                         message: "未解決の初期化結果または物理カード照合エラーのため、このカードは隔離されました: \(userFacingMessage(for: error))"
                     )
+                    scheduleAutomaticCardSelection()
                 }
             }
 
         case let .disappeared(sourceID, arrivalGeneration):
             cardAppearanceRegistrationGenerations.removeValue(forKey: sourceID)
+            rejectedAutomaticCardIDs.remove(sourceID)
+            if registeredCardCandidates[sourceID]?.arrivalGeneration == arrivalGeneration {
+                registeredCardCandidates.removeValue(forKey: sourceID)
+                updateConnectedCardCandidates()
+            }
+            let removedAutomaticSource = automaticallySelectedCard == CardInsertionIdentity(
+                sourceID: sourceID, arrivalGeneration: arrivalGeneration
+            )
+            if removedAutomaticSource { automaticallySelectedCard = nil }
+            scheduleAutomaticCardSelection()
             deferredCardScanGeneration = nil
             guard Self.cardDisappearanceMatches(
                 sourceID: sourceID,
@@ -4587,6 +4821,11 @@ final class AppModel: ObservableObject {
             phase = .failed("コピー元カードが取り外されました")
             statusMessage = "カードの挿入世代が変わったため、再スキャンと再検証が必要です"
             cardInitializationStatus = "抜去を検出したため初期化許可を失効しました"
+            if removedAutomaticSource {
+                // Only clear our own automatic choice. A manually chosen source remains sticky.
+                sourceURL = nil
+                scheduleAutomaticCardSelection()
+            }
         }
     }
 
@@ -4607,6 +4846,101 @@ final class AppModel: ObservableObject {
             cardInitializationStatus = "カード監視を開始できないため初期化は無効です"
             statusMessage = "カード監視を開始できませんでした: \(error.localizedDescription)"
         }
+    }
+
+    private var cardSourceInteractionAllowsScan: Bool {
+        CardAutoSelectionInteractionState(
+            route: route,
+            mainWindowIsKey: cardAutoSelectionMainWindowIsKey,
+            explicitInteractionBlocked: cardAutoSelectionInteractionBlocked,
+            captureConfigurationVisible: showCaptureConfigurationSheet,
+            projectLocationVisible: showProjectLocationSheet,
+            previewVisible: previewAsset != nil,
+            eraseConfirmationVisible: showCardEraseConfirmation,
+            assetExclusionConfirmationVisible: showAssetExclusionConfirmation,
+            emptyDirectoryConfirmationVisible: showEmptyDirectoryExclusionConfirmation,
+            nativeModalVisible: NSApplication.shared.modalWindow != nil,
+            attachedSheetVisible: NSApplication.shared.keyWindow?.attachedSheet != nil
+        ).allowsSelection
+    }
+
+    private func updateConnectedCardCandidates() {
+        let candidates = CardAutoSelectionPolicy.eligibleCandidates(Array(registeredCardCandidates.values))
+        if candidates != connectedCardCandidates { connectedCardCandidates = candidates }
+    }
+
+    private func scheduleAutomaticCardSelection() {
+        guard cardVolumeMonitor != nil else { return }
+        automaticCardSelectionTask?.cancel()
+        let generation = UUID()
+        automaticCardSelectionGeneration = generation
+        automaticCardSelectionTask = Task { [weak self] in
+            // Coalesce initial volume callbacks and wait for all identity/quarantine lookups.
+            // No filesystem work is performed by this timer on the main actor.
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            while !Task.isCancelled {
+                guard let self, automaticCardSelectionGeneration == generation else { return }
+                let recognizedCards = cardVolumeMonitor?.currentIdentities ?? []
+                let knownDispositionIDs = Set(registeredCardCandidates.keys).union(rejectedAutomaticCardIDs)
+                let decision = CardAutoSelectionPolicy.decision(
+                    candidates: connectedCardCandidates,
+                    hasExistingSource: sourceURL != nil,
+                    detectionInProgress: cardVolumeMonitor?.hasPendingObservations == true
+                        || !cardAppearanceRegistrationGenerations.isEmpty
+                        || recognizedCards.contains { !knownDispositionIDs.contains($0.id) },
+                    interactionAllowsSelection: cardSourceInteractionAllowsScan
+                        && canStartIngestSourceScan,
+                    recognizedCardCount: recognizedCards.count
+                )
+                switch decision {
+                case .select(let sourceID, let arrivalGeneration):
+                    selectConnectedCard(sourceID: sourceID, arrivalGeneration: arrivalGeneration, automatic: true)
+                    return
+                case .waitForDetection:
+                    setCardAutoSelectionStatus("接続中のSDカードを安全に照合しています")
+                case .waitForInteraction:
+                    setCardAutoSelectionStatus("SDカードを検出しました。取り込み画面で操作が完了すると自動で読み込みます")
+                case .requireChoice:
+                    setCardAutoSelectionStatus("複数のSDカードを検出しました。読み込むカードを選択してください")
+                    return
+                case .preserveExistingSource:
+                    setCardAutoSelectionStatus(automaticallySelectedCard == nil
+                        ? "選択済みの読み込み元を維持しています。別のSDカードへ自動変更しません"
+                        : "接続中のSDカードを自動選択しました")
+                    return
+                case .noCandidate:
+                    setCardAutoSelectionStatus("SDカードを自動検出できない場合は「選択…」から指定してください")
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            }
+        }
+    }
+
+    private func setCardAutoSelectionStatus(_ message: String) {
+        if cardAutoSelectionStatus != message { cardAutoSelectionStatus = message }
+    }
+
+    func selectConnectedCard(sourceID: SourceVolumeID, arrivalGeneration: UUID) {
+        selectConnectedCard(sourceID: sourceID, arrivalGeneration: arrivalGeneration, automatic: false)
+    }
+
+    private func selectConnectedCard(sourceID: SourceVolumeID, arrivalGeneration: UUID, automatic: Bool) {
+        guard (!automatic || sourceURL == nil),
+              cardSourceInteractionAllowsScan,
+              canStartIngestSourceScan,
+              let identity = registeredCardCandidates[sourceID],
+              identity.arrivalGeneration == arrivalGeneration,
+              CardAutoSelectionPolicy.isEligible(identity),
+              let mountURL = identity.mountURL,
+              cardVolumeMonitor?.identity(containing: mountURL)?.securityDigest == identity.securityDigest
+        else { return }
+        automaticallySelectedCard = automatic ? CardInsertionIdentity(
+            sourceID: identity.id, arrivalGeneration: identity.arrivalGeneration
+        ) : nil
+        sourceURL = mountURL
+        setCardAutoSelectionStatus(automatic ? "接続中のSDカードを自動選択しました" : "指定したSDカードを読み込みます")
+        scan(url: mountURL)
     }
 
     private func acceptRegisteredCardAppearance(_ identity: VolumeIdentity) {
@@ -4630,14 +4964,14 @@ final class AppModel: ObservableObject {
         activeSourceRootPath = canonicalRootPath
         cardInitializationStatus = "リムーバブルカードを強い物理IDと永続隔離ストアで照合しました"
         guard identityChanged, let canonicalRoot else { return }
-        let mustDeferScan = ingestScanAdmissionMustWait
+        let mustDeferScan = ingestScanAdmissionMustWait || !cardSourceInteractionAllowsScan
         if mustDeferScan {
             let deferredGeneration = UUID()
             deferredCardScanGeneration = deferredGeneration
             statusMessage = "実行中の安全停止が完了した後に、登録済みカードをフルスキャンします"
             Task { [weak self] in
                 guard let self else { return }
-                while ingestScanAdmissionMustWait {
+                while ingestScanAdmissionMustWait || !cardSourceInteractionAllowsScan {
                     try? await Task.sleep(for: .milliseconds(50))
                     guard deferredCardScanGeneration == deferredGeneration else { return }
                     guard Self.permitsNewMediaIsolationAttempt(
@@ -4649,7 +4983,8 @@ final class AppModel: ObservableObject {
                 }
                 guard deferredCardScanGeneration == deferredGeneration,
                       !ingestScanAdmissionMustWait,
-                      Self.isURL(sourceURL, containedBy: identity.mountURL),
+                      cardSourceInteractionAllowsScan,
+                      self.sourceURL.map({ Self.isURL($0, containedBy: identity.mountURL) }) == true,
                       cardVolumeMonitor?.identity(containing: canonicalRoot)?.securityDigest
                       == identity.securityDigest
                 else { return }
@@ -4658,7 +4993,7 @@ final class AppModel: ObservableObject {
                 self.sourceURL = canonicalRoot
                 scan(url: canonicalRoot)
             }
-        } else if !ingestScanAdmissionMustWait {
+        } else if !ingestScanAdmissionMustWait && cardSourceInteractionAllowsScan {
             deferredCardScanGeneration = nil
             scanTask?.cancel()
             self.sourceURL = canonicalRoot
@@ -4737,7 +5072,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func makePersistedProject(
+    func makePersistedProject(
         sceneOverride: [AppScene]? = nil,
         sceneCatalogVersionOverride: CatalogVersionRef? = nil
     ) throws -> Project {
@@ -4754,7 +5089,12 @@ final class AppModel: ObservableObject {
                     $0.isActive && $0.cardNumber == number
                 })?.photographerID
             }
-            if let mappedID,
+            if let selectedID = selectedProjectPhotographerID,
+               let index = photographers.firstIndex(where: {
+                   $0.id == selectedID && !$0.isArchived && $0.displayName == displayName
+               }) {
+                activePhotographerID = photographers[index].id
+            } else if let mappedID,
                let index = photographers.firstIndex(where: {
                    $0.id == mappedID && !$0.isArchived && $0.displayName == displayName
                }) {
@@ -4778,20 +5118,7 @@ final class AppModel: ObservableObject {
             from: renameTemplate,
             timeZoneIdentifier: Self.renameTimeZone(for: projectSettings.renameRule).identifier
         )
-        if let location = locationName.nilIfBlank {
-            if let selectedID = settings.selectedLocationID,
-               let index = settings.locations.firstIndex(where: { $0.id == selectedID }) {
-                settings.locations[index].displayName = location
-            } else if let index = settings.locations.firstIndex(where: { $0.displayName == location }) {
-                settings.selectedLocationID = settings.locations[index].id
-            } else {
-                let entry = ProjectLocation(displayName: location)
-                settings.locations.append(entry)
-                settings.selectedLocationID = entry.id
-            }
-        } else {
-            settings.selectedLocationID = nil
-        }
+        try ProjectConfigurationEditing.reconcileLocation(name: locationName, settings: &settings)
         if let number = cardNumber.nilIfBlank {
             if let index = settings.cardDefinitions.firstIndex(where: { $0.cardNumber == number }) {
                 settings.cardDefinitions[index].photographerID = activePhotographerID
@@ -4818,6 +5145,8 @@ final class AppModel: ObservableObject {
         }
         projectPhotographers = photographers
         projectSettings = settings
+        selectedProjectPhotographerID = activePhotographerID
+        selectedProjectCardID = settings.cardDefinitions.first { $0.cardNumber == cardNumber.nilIfBlank }?.id
         return Project(
             id: projectID,
             name: normalizedName,
@@ -4831,10 +5160,11 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func applyStoredProject(_ project: Project) {
+    func applyStoredProject(_ project: Project) {
         lanSceneCatalog?.setOff()
         lanCatalogEnabled = false
         projectID = project.id
+        selectedStoredProjectID = project.id.rawValue
         projectName = project.name
         destinationURL = project.destination
         projectPhotographers = project.photographers
@@ -4843,10 +5173,19 @@ final class AppModel: ObservableObject {
         excludedFolderNamesDraft = project.settings.excludedFolderNames.sorted().joined(separator: ", ")
 
         let activeCard = project.settings.cardDefinitions.first { $0.isActive }
-        let activePhotographer = activeCard?.photographerID.flatMap { photographerID in
-            project.photographers.first { $0.id == photographerID && !$0.isArchived }
-        } ?? project.photographers.first { !$0.isArchived }
+        let activePhotographer: Photographer?
+        if let activeCard {
+            // An existing card with no usable mapping explicitly means "unspecified". Never
+            // assign an unrelated first photographer merely because the mapping is absent.
+            activePhotographer = activeCard.photographerID.flatMap { photographerID in
+                project.photographers.first { $0.id == photographerID && !$0.isArchived }
+            }
+        } else {
+            activePhotographer = project.photographers.first { !$0.isArchived }
+        }
         photographer = activePhotographer?.displayName ?? ""
+        selectedProjectPhotographerID = activePhotographer?.id
+        selectedProjectCardID = activeCard?.id
         if let locationID = project.settings.selectedLocationID {
             locationName = project.settings.locations.first { $0.id == locationID }?.displayName ?? ""
         } else {
@@ -4875,6 +5214,10 @@ final class AppModel: ObservableObject {
         scenes = restoredScenes.isEmpty ? Self.defaultScenes() : restoredScenes
         selectedSceneID = scenes.first?.id
         clearScanDerivedStateForProjectTransition()
+        projectHasUnsavedChanges = false
+        projectDestinationStatus = project.destination == nil
+            ? "このプロジェクトには保存先が登録されていません"
+            : "プロジェクトに保存された保存先を復元しました"
     }
 
     private static func defaultScenes() -> [AppScene] {
@@ -5268,6 +5611,7 @@ final class AppModel: ObservableObject {
     }
 
     private func markProjectMetadataDirty() {
+        projectHasUnsavedChanges = true
         projectOperationGeneration = UUID()
         projectPersistenceStatus = "未保存の設定変更"
         invalidateVerifiedIngestIntent()

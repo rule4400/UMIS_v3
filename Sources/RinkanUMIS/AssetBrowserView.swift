@@ -96,13 +96,6 @@ struct AssetBrowserView: View {
                     .focused($searchIsFocused)
                     .accessibilityLabel("素材をファイル名またはフォルダ名で検索")
                     .help("ファイル名・フォルダ名で絞り込み（⌘F）")
-                Picker("種類", selection: category) {
-                    Text("すべて").tag(AssetCategory?.none)
-                    ForEach(AssetCategory.allCases, id: \.self) { item in
-                        Text(item.rawValue).tag(Optional(item))
-                    }
-                }
-                .frame(width: 110)
                 if hasActiveFilter {
                     Button {
                         clearFilters()
@@ -116,6 +109,11 @@ struct AssetBrowserView: View {
             .padding(.horizontal, 10)
             .frame(height: 42)
             .disabled(!model.canPresentMediaPreview)
+
+            AssetCategoryFilterButtons(selection: category)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+                .disabled(!canFocusSearch)
 
             HStack(spacing: 8) {
                 Text("表示 \(filteredAssets.count) / 全 \(allAssets.count)")

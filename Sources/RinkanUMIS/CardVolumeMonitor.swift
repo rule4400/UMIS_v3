@@ -7,6 +7,8 @@ import UMISCore
 enum CardVolumeMonitorEvent: Sendable {
   case appeared(VolumeIdentity)
   case disappeared(sourceID: SourceVolumeID, arrivalGeneration: UUID)
+  /// Re-evaluate automatic selection only after every pending observation has resolved.
+  case inventoryChanged
 }
 
 struct CardInsertionIdentity: Equatable, Sendable {
@@ -91,6 +93,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
   private var pendingTicketsByRegistryID: [UInt64: UUID] = [:]
   private var pendingRegistryIDByBSDName: [String: UInt64] = [:]
   private var started = false
+  private var didSeedMountedVolumes = false
 
   init(
     registry: VolumeIdentityRegistry,
@@ -131,6 +134,27 @@ final class CardVolumeMonitor: @unchecked Sendable {
       context
     )
     DASessionSetDispatchQueue(session, queue)
+    // Explicitly stage the volumes that were mounted before launch. Do not depend on the
+    // relative timing of the initial DA callbacks when more than one card is connected.
+    queue.async { [weak self] in
+      guard let self else { return }
+      let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil) ?? []
+      for url in urls {
+        if let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, self.session, url as CFURL) {
+          self.handleAppearance(disk)
+        }
+      }
+      self.lock.withLock { self.didSeedMountedVolumes = true }
+      self.onEvent(.inventoryChanged)
+    }
+  }
+
+  var hasPendingObservations: Bool {
+    lock.withLock { !didSeedMountedVolumes || !pendingTicketsByRegistryID.isEmpty }
+  }
+
+  var currentIdentities: [VolumeIdentity] {
+    lock.withLock { recordsByRegistryID.values.map(\.identity) }
   }
 
   func identity(containing url: URL) -> VolumeIdentity? {
@@ -167,6 +191,8 @@ final class CardVolumeMonitor: @unchecked Sendable {
       registryEntryID: observation.registryEntryID
     )
     lock.unlock()
+
+    onEvent(.inventoryChanged)
 
     let sourceID = identityReservation.identity.sourceID
     let arrivalGeneration = identityReservation.identity.arrivalGeneration
@@ -244,6 +270,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
           return
         }
         onEvent(.appeared(identity))
+        onEvent(.inventoryChanged)
       } catch {
         self?.lock.withLock {
           guard
@@ -263,6 +290,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
         }
         // Internal, network, multi-partition and incompletely identified volumes
         // are intentionally absent from the card registry.
+        onEvent(.inventoryChanged)
       }
     }
   }
@@ -279,6 +307,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
       let record = recordsByRegistryID.removeValue(forKey: registryID)
     else {
       lock.unlock()
+      onEvent(.inventoryChanged)
       return
     }
     insertionIdentitySessions.registerDisappearance(registryEntryID: registryID)
@@ -294,6 +323,7 @@ final class CardVolumeMonitor: @unchecked Sendable {
           sourceID: identity.id,
           arrivalGeneration: identity.arrivalGeneration
         ))
+      onEvent(.inventoryChanged)
     }
   }
 

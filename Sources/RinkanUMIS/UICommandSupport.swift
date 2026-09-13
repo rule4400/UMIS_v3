@@ -208,9 +208,9 @@ struct UMISApplicationCommands: Commands {
     private var assignToSceneCommandIsEnabled: Bool {
         mainSceneIsActive == true
             && model.route == .ingest
-            && model.canStartExclusiveOperation
+            && model.canInteractWithScenePanel
             && !model.visibleSelectedIngestAssetIDs.isEmpty
-            && model.selectedSceneID != nil
+            && model.selectedSceneIsVisible
             && !modalInteractionIsPresented
     }
 
@@ -219,6 +219,8 @@ struct UMISApplicationCommands: Commands {
             || model.showAssetExclusionConfirmation
             || model.showEmptyDirectoryExclusionConfirmation
             || model.showCardEraseConfirmation
+            || model.showCaptureConfigurationSheet
+            || model.showProjectLocationSheet
     }
 
     private var focusedEditableTextView: NSTextView? {

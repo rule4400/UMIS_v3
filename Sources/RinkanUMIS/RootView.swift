@@ -21,6 +21,9 @@ struct RootView: View {
             MediaPreviewView(asset: asset, pipeline: model.mediaPipeline)
                 .frame(minWidth: 760, minHeight: 560)
         }
+        .background(CardAutoSelectionWindowObserver {
+            model.cardAutoSelectionMainWindowIsKey = $0
+        })
         .focusedSceneValue(\.umisMainSceneIsActive, true)
     }
 
